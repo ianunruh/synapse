@@ -28,15 +28,25 @@ These were stated at project start (or added during early planning) and must not
 
 ## Commands
 
+The repo is a Go multi-module workspace. The root module is dep-free; sibling modules under `eventstore/`, `codec/`, etc. that need third-party deps live in their own go.mod files. `go.work` ties them together for local dev.
+
 ```
+# Root module
 go build ./...
 go vet ./...
 go test ./...
 go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
-CGO_ENABLED=1 go test -race ./...   # requires gcc
+
+# Sibling module (run from the module directory)
+cd eventstore/sqlite && go test ./...
+cd eventstore/sqlite && go vet ./...
+cd eventstore/sqlite && go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
+
+# Race detector (root, requires gcc)
+CGO_ENABLED=1 go test -race ./...
 ```
 
-Run modernize before committing. Exit 0 with no output means clean.
+Run modernize on both the root and any modified sibling modules before committing. Exit 0 with no output means clean.
 
 ## Conventions worth remembering
 
