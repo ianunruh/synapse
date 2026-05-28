@@ -89,15 +89,15 @@ func (m Money) MarshalJSON() ([]byte, error) {
 
 func (m *Money) UnmarshalJSON(data []byte) error {
 	s := strings.Trim(string(data), `"$`)
-	dot := strings.IndexByte(s, '.')
-	if dot < 0 {
+	dollarsStr, centsStr, ok := strings.Cut(s, ".")
+	if !ok {
 		return errors.New("money: missing decimal point")
 	}
-	dollars, err := strconv.Atoi(s[:dot])
+	dollars, err := strconv.Atoi(dollarsStr)
 	if err != nil {
 		return fmt.Errorf("money dollars: %w", err)
 	}
-	cents, err := strconv.Atoi(s[dot+1:])
+	cents, err := strconv.Atoi(centsStr)
 	if err != nil {
 		return fmt.Errorf("money cents: %w", err)
 	}

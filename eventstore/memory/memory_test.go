@@ -410,14 +410,12 @@ func TestConcurrent_AppendExactlyOneWins(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for i := range N {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ev := makeEvent(testStream, 1)
 			ev.EventID = fmt.Sprintf("contender-%d", i)
 			_, err := store.Append(ctx, testStream, es.NoStream, ev)
 			results <- result{err}
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
