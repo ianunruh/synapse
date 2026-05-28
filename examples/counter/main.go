@@ -1,0 +1,182 @@
+// Command counter is an end-to-end demo of the synapse event sourcing
+// toolkit. It wires the four packages — es, eventstore/memory,
+// codec/json, idgen — and exercises aggregate creation, command
+// execution, rehydration from history, raw event-log inspection, and
+// optimistic-concurrency conflict detection.
+//
+// Run it with:
+//
+//	go run ./examples/counter
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+
+	jsoncodec "github.com/ianunruh/synapse/codec/json"
+	"github.com/ianunruh/synapse/es"
+	"github.com/ianunruh/synapse/eventstore/memory"
+	"github.com/ianunruh/synapse/idgen"
+)
+
+// --- Domain ---------------------------------------------------------
+
+// Counter is the aggregate. Embedding *es.AggregateBase gives it
+// stream identity, version tracking, and a pending event buffer.
+type Counter struct {
+	*es.AggregateBase
+	Name  string
+	Value int
+}
+
+// NewCounter is the factory the Repository invokes to construct a
+// fresh aggregate before rehydration.
+func NewCounter(id es.StreamID) *Counter {
+	return &Counter{AggregateBase: es.NewAggregateBase(id)}
+}
+
+type CounterCreated struct {
+	Name string `json:"name"`
+}
+
+type CounterIncremented struct {
+	By int `json:"by"`
+}
+
+type CounterReset struct{}
+
+// Apply mutates in-memory state in response to a single event. It is
+// invoked during rehydration AND immediately after a new event is
+// recorded — implementations must be deterministic.
+func (c *Counter) Apply(env es.Envelope) error {
+	switch p := env.Payload.(type) {
+	case CounterCreated:
+		c.Name = p.Name
+	case CounterIncremented:
+		c.Value += p.By
+	case CounterReset:
+		c.Value = 0
+	}
+	return nil
+}
+
+// Create stages a CounterCreated event. A counter may be created at
+// most once; subsequent calls fail.
+func (c *Counter) Create(name string) error {
+	if c.Version() != 0 {
+		return fmt.Errorf("counter %q already created", c.StreamID())
+	}
+	return c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
+}
+
+// Increment stages a CounterIncremented event.
+func (c *Counter) Increment(by int) error {
+	return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+}
+
+// Reset stages a CounterReset event.
+func (c *Counter) Reset() error {
+	return c.Record("counter.reset", CounterReset{}, c.Apply)
+}
+
+// --- Commands -------------------------------------------------------
+
+type IncrementCmd struct{ By int }
+
+func IncrementHandler(_ context.Context, cmd IncrementCmd, c *Counter) error {
+	return c.Increment(cmd.By)
+}
+
+// --- Main -----------------------------------------------------------
+
+func main() {
+	ctx := context.Background()
+
+	// 1. Wire the library together. Codecs are registered per event
+	//    type so the registry can mix wire formats in one stream if
+	//    needed.
+	store := memory.New()
+	reg := es.NewRegistry()
+	es.Register(reg, "counter.created", jsoncodec.For[CounterCreated]())
+	es.Register(reg, "counter.incremented", jsoncodec.For[CounterIncremented]())
+	es.Register(reg, "counter.reset", jsoncodec.For[CounterReset]())
+	repo := es.NewRepository(store, reg, NewCounter,
+		es.WithIDGenerator(idgen.UUIDv7{}))
+
+	stream := es.StreamID("counter/hits")
+
+	// 2. Loading a non-existent stream surfaces *es.StreamNotFoundError.
+	fmt.Println("== loading non-existent stream")
+	if _, err := repo.Load(ctx, stream); errors.Is(err, es.ErrStreamNotFound) {
+		fmt.Printf("  ok: %v\n\n", err)
+	}
+
+	// 3. Create the counter and save it. Fresh aggregates use
+	//    expected=NoStream automatically inside Save.
+	fmt.Println("== creating the counter")
+	c := NewCounter(stream)
+	if err := c.Create("hits"); err != nil {
+		log.Fatalf("Create: %v", err)
+	}
+	if err := repo.Save(ctx, c); err != nil {
+		log.Fatalf("Save: %v", err)
+	}
+	fmt.Printf("  %q created (version %d)\n\n", c.Name, c.Version())
+
+	// 4. Run a series of increment commands through Execute.
+	fmt.Println("== executing increments")
+	for _, by := range []int{1, 1, 5, 2} {
+		if err := es.Execute(ctx, repo, stream, IncrementCmd{By: by}, IncrementHandler); err != nil {
+			log.Fatalf("Execute: %v", err)
+		}
+		fmt.Printf("  +%d\n", by)
+	}
+	fmt.Println()
+
+	// 5. Rehydrate and show the projected state.
+	loaded, err := repo.Load(ctx, stream)
+	if err != nil {
+		log.Fatalf("Load: %v", err)
+	}
+	fmt.Printf("== current state\n  %s = %d (version %d)\n\n",
+		loaded.Name, loaded.Value, loaded.Version())
+
+	// 6. Walk the raw event log straight from the store. The store
+	//    deals in opaque bytes; the payload column is whatever the
+	//    codec emitted.
+	fmt.Println("== event log")
+	for env, err := range store.Load(ctx, stream, es.ReadOptions{}) {
+		if err != nil {
+			log.Fatalf("store.Load: %v", err)
+		}
+		fmt.Printf("  v%-2d %-21s %s  %s\n",
+			env.Version, env.Type,
+			env.RecordedAt.Format("15:04:05.000"),
+			env.Payload)
+	}
+	fmt.Println()
+
+	// 7. Load the counter twice, mutate both, save in order. The
+	//    second Save loses because expected=Exact(loaded_version) no
+	//    longer matches the head the first Save advanced.
+	fmt.Println("== concurrent modification")
+	a, _ := repo.Load(ctx, stream)
+	b, _ := repo.Load(ctx, stream)
+	_ = a.Increment(10)
+	_ = b.Increment(20)
+	if err := repo.Save(ctx, a); err != nil {
+		log.Fatalf("Save a: %v", err)
+	}
+	fmt.Println("  a +=10 saved")
+	if err := repo.Save(ctx, b); err != nil {
+		fmt.Printf("  b +=20 blocked: %v\n", err)
+	}
+	fmt.Println()
+
+	// 8. Final state — only a's increment took.
+	final, _ := repo.Load(ctx, stream)
+	fmt.Printf("== final state\n  %s = %d (version %d)\n",
+		final.Name, final.Value, final.Version())
+}
