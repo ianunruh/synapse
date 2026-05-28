@@ -9,9 +9,10 @@ import (
 )
 
 // Repository binds an [EventStore], a codec [Registry], a [Clock], an
-// [idgen.Generator], and an optional chain of [Middleware] together
-// so application code can load and save aggregates of type A without
-// thinking about serialization, ID generation, or optimistic
+// [idgen.Generator], an optional [SnapshotStore]/[SnapshotPolicy], and
+// an optional chain of [Middleware] together so application code can
+// load and save aggregates of type A without thinking about
+// serialization, ID generation, snapshotting, or optimistic
 // concurrency.
 //
 // A Repository is safe for concurrent use as long as its dependencies
@@ -24,6 +25,8 @@ type Repository[A Aggregate] struct {
 	idGen      idgen.Generator
 	newFn      func(StreamID) A
 	middleware []Middleware
+	snapStore  SnapshotStore
+	snapPolicy SnapshotPolicy
 }
 
 // repositoryOptions collects the configurable knobs threaded through
@@ -32,6 +35,8 @@ type repositoryOptions struct {
 	clock      Clock
 	idGen      idgen.Generator
 	middleware []Middleware
+	snapStore  SnapshotStore
+	snapPolicy SnapshotPolicy
 }
 
 // RepositoryOption configures a [Repository] at construction time.
@@ -63,6 +68,23 @@ func WithMiddleware(mws ...Middleware) RepositoryOption {
 	}
 }
 
+// WithSnapshotStore wires a [SnapshotStore] into the Repository,
+// enabling the snapshot-aware [Repository.Load] path and unlocking
+// [Repository.SaveSnapshot]. Without a store, automatic snapshots
+// never fire and manual SaveSnapshot returns an error.
+func WithSnapshotStore(s SnapshotStore) RepositoryOption {
+	return func(o *repositoryOptions) { o.snapStore = s }
+}
+
+// WithSnapshotPolicy installs a [SnapshotPolicy] that the Repository
+// consults after each successful Save to decide whether to write a
+// new snapshot. Without a policy, automatic snapshots never fire even
+// if a [SnapshotStore] is configured; [Repository.SaveSnapshot]
+// remains usable for manual checkpoints.
+func WithSnapshotPolicy(p SnapshotPolicy) RepositoryOption {
+	return func(o *repositoryOptions) { o.snapPolicy = p }
+}
+
 // NewRepository constructs a [Repository] over the given store and
 // codec registry. newFn returns a zero-value aggregate bound to the
 // requested stream id; it is invoked by Load before replaying history.
@@ -86,21 +108,55 @@ func NewRepository[A Aggregate](
 		idGen:      o.idGen,
 		newFn:      newFn,
 		middleware: slices.Clone(o.middleware),
+		snapStore:  o.snapStore,
+		snapPolicy: o.snapPolicy,
 	}
 }
 
-// Load constructs a fresh aggregate via newFn and replays the stream's
-// events through Apply, advancing SetVersion after each event.
+// Load constructs a fresh aggregate via newFn. If a [SnapshotStore] is
+// configured AND the aggregate implements [Snapshotter], Load first
+// tries to restore from the latest snapshot and then replays only
+// events with Version > snapshot.Version; otherwise it replays the
+// full event history.
 //
-// If the stream holds no events Load returns *[StreamNotFoundError]
-// wrapping [ErrStreamNotFound]. Callers needing "load or create"
-// semantics should construct an aggregate directly and call Save.
+// If neither a snapshot nor any events exist for the stream, Load
+// returns *[StreamNotFoundError] wrapping [ErrStreamNotFound].
+// Callers needing "load or create" semantics should construct an
+// aggregate directly and call Save.
 func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 	var zero A
 	agg := r.newFn(id)
 
-	var seen int
-	for raw, err := range r.store.Load(ctx, id, ReadOptions{}) {
+	fromVersion := uint64(0) // 0 in ReadOptions = from the start
+	foundSnapshot := false
+
+	if r.snapStore != nil {
+		if snapper, ok := any(agg).(Snapshotter); ok {
+			snap, found, err := r.snapStore.Latest(ctx, id)
+			if err != nil {
+				return zero, fmt.Errorf("synapse: snapshot load: %w", err)
+			}
+			if found {
+				c, ok := r.reg.Lookup(snap.Type)
+				if !ok {
+					return zero, &CodecNotFoundError{EventType: snap.Type}
+				}
+				state, err := c.Unmarshal(snap.Payload)
+				if err != nil {
+					return zero, fmt.Errorf("synapse: unmarshal snapshot %s: %w", snap.Type, err)
+				}
+				if err := snapper.Restore(state); err != nil {
+					return zero, fmt.Errorf("synapse: restore %s at v%d: %w", snap.Type, snap.Version, err)
+				}
+				agg.SetVersion(snap.Version)
+				fromVersion = snap.Version + 1
+				foundSnapshot = true
+			}
+		}
+	}
+
+	var seenEvents int
+	for raw, err := range r.store.Load(ctx, id, ReadOptions{From: fromVersion}) {
 		if err != nil {
 			return zero, err
 		}
@@ -132,10 +188,10 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 			return zero, fmt.Errorf("synapse: apply %s at v%d: %w", raw.Type, raw.Version, err)
 		}
 		agg.SetVersion(env.Version)
-		seen++
+		seenEvents++
 	}
 
-	if seen == 0 {
+	if !foundSnapshot && seenEvents == 0 {
 		return zero, &StreamNotFoundError{Stream: id}
 	}
 	return agg, nil
@@ -146,6 +202,13 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 // appends them to the store under an expected revision matching the
 // aggregate's loaded version. On success, Pending is cleared.
 //
+// After a successful append, if a [SnapshotStore] and [SnapshotPolicy]
+// are both configured and the aggregate implements [Snapshotter], the
+// policy is consulted with the version before and after the Save. If
+// it returns true, a best-effort snapshot save is attempted; errors
+// from that step are intentionally swallowed (events are already
+// committed; the snapshot is an optimization).
+//
 // Returns nil immediately if there are no pending events.
 func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 	pending := agg.Pending()
@@ -154,9 +217,10 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 	}
 
 	firstVersion := pending[0].Version
+	versionBefore := firstVersion - 1
 	expected := NoStream
-	if firstVersion > 1 {
-		expected = Exact(firstVersion - 1)
+	if versionBefore > 0 {
+		expected = Exact(versionBefore)
 	}
 
 	now := r.clock.NowUTC()
@@ -197,6 +261,68 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 	if _, err := r.store.Append(ctx, agg.StreamID(), expected, raws...); err != nil {
 		return err
 	}
+	versionAfter := agg.Version()
 	agg.ClearPending()
+
+	if r.snapStore != nil && r.snapPolicy != nil && r.snapPolicy(agg, versionBefore, versionAfter) {
+		// TODO: surface this error via slog once we add logging.
+		_ = r.trySaveSnapshot(ctx, agg)
+	}
 	return nil
+}
+
+// SaveSnapshot persists a snapshot of the aggregate's current state
+// to the configured [SnapshotStore]. It is intended for explicit
+// checkpoints — migration scripts, integration tests, or
+// application-driven snapshotting outside the [SnapshotPolicy].
+//
+// Returns an error when no [SnapshotStore] is configured or when the
+// aggregate does not implement [Snapshotter].
+func (r *Repository[A]) SaveSnapshot(ctx context.Context, agg A) error {
+	if r.snapStore == nil {
+		return fmt.Errorf("synapse: SaveSnapshot: no snapshot store configured")
+	}
+	snapper, ok := any(agg).(Snapshotter)
+	if !ok {
+		return fmt.Errorf("synapse: SaveSnapshot: aggregate %T does not implement Snapshotter", agg)
+	}
+	return r.writeSnapshot(ctx, agg, snapper)
+}
+
+// trySaveSnapshot is the internal entry point used by Save. It
+// short-circuits silently when the aggregate is not a Snapshotter.
+func (r *Repository[A]) trySaveSnapshot(ctx context.Context, agg A) error {
+	snapper, ok := any(agg).(Snapshotter)
+	if !ok {
+		return nil
+	}
+	return r.writeSnapshot(ctx, agg, snapper)
+}
+
+// writeSnapshot serializes the aggregate's snapshot state and writes
+// it to the snapshot store.
+func (r *Repository[A]) writeSnapshot(ctx context.Context, agg A, snapper Snapshotter) error {
+	state, err := snapper.Snapshot()
+	if err != nil {
+		return fmt.Errorf("synapse: snapshot: %w", err)
+	}
+
+	snapType := snapper.SnapshotType()
+	c, ok := r.reg.Lookup(snapType)
+	if !ok {
+		return &CodecNotFoundError{EventType: snapType}
+	}
+	payload, err := c.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("synapse: marshal snapshot %s: %w", snapType, err)
+	}
+
+	return r.snapStore.Save(ctx, RawSnapshot{
+		StreamID:    agg.StreamID(),
+		Version:     agg.Version(),
+		Type:        snapType,
+		ContentType: c.ContentType(),
+		RecordedAt:  r.clock.NowUTC(),
+		Payload:     payload,
+	})
 }
