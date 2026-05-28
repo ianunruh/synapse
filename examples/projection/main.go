@@ -162,13 +162,8 @@ func main() {
 	// 3. Run 1: catch-up. Build derived state from the existing log.
 	fmt.Println("== run 1: catch-up — build derived state from history")
 	totals := newTotalsProjection()
-	runner1 := &projection.Runner{
-		Name:       "totals",
-		Store:      events,
-		Registry:   reg,
-		Projection: totals,
-		Checkpoint: cps,
-	}
+	runner1 := projection.NewRunner("totals", events, reg, totals,
+		projection.WithCheckpoint(cps))
 	if err := runner1.Run(ctx); err != nil {
 		log.Fatalf("run 1: %v", err)
 	}
@@ -200,13 +195,8 @@ func main() {
 	fmt.Println("== run 2: resume from checkpoint with a fresh projection")
 	fmt.Println("  (fresh projection sees only events past the saved checkpoint)")
 	fresh := newTotalsProjection()
-	runner2 := &projection.Runner{
-		Name:       "totals",
-		Store:      events,
-		Registry:   reg,
-		Projection: fresh,
-		Checkpoint: cps,
-	}
+	runner2 := projection.NewRunner("totals", events, reg, fresh,
+		projection.WithCheckpoint(cps))
 	if err := runner2.Run(ctx); err != nil {
 		log.Fatalf("run 2: %v", err)
 	}
@@ -220,13 +210,8 @@ func main() {
 		log.Fatalf("Reset: %v", err)
 	}
 	rebuild := newTotalsProjection()
-	runner3 := &projection.Runner{
-		Name:       "totals",
-		Store:      events,
-		Registry:   reg,
-		Projection: rebuild,
-		Checkpoint: cps,
-	}
+	runner3 := projection.NewRunner("totals", events, reg, rebuild,
+		projection.WithCheckpoint(cps))
 	if err := runner3.Run(ctx); err != nil {
 		log.Fatalf("run 3: %v", err)
 	}
@@ -241,14 +226,9 @@ func main() {
 	defer cancel()
 
 	live := newTotalsProjection()
-	liveRunner := &projection.Runner{
-		Name:       "live-totals",
-		Store:      events,
-		Registry:   reg,
-		Projection: live,
-		Checkpoint: cps,
-		Live:       true,
-	}
+	liveRunner := projection.NewRunner("live-totals", events, reg, live,
+		projection.WithCheckpoint(cps),
+		projection.WithLive(true))
 	done := make(chan error, 1)
 	go func() { done <- liveRunner.Run(liveCtx) }()
 

@@ -6,14 +6,14 @@
 //
 // Typical usage:
 //
-//	runner := &projection.Runner{
-//	    Name:       "order-totals",
-//	    Store:      eventStore,
-//	    Registry:   reg,
-//	    Projection: totalsProjection,
-//	    Checkpoint: checkpoints,
-//	    Live:       true,
-//	}
+//	runner := projection.NewRunner(
+//	    "order-totals",
+//	    eventStore,
+//	    reg,
+//	    totalsProjection,
+//	    projection.WithCheckpoint(checkpoints),
+//	    projection.WithLive(true),
+//	)
 //	if err := runner.Run(ctx); err != nil {
 //	    log.Fatal(err)
 //	}
@@ -29,59 +29,112 @@ import (
 )
 
 // Runner drives one [es.Projection] over events from a
-// [es.SubscribableEventStore]. Configure the required fields (Name,
-// Store, Registry, Projection) and call [Runner.Run].
+// [es.SubscribableEventStore]. Construct via [NewRunner] and call
+// [Runner.Run].
 //
 // A Runner instance is single-shot: it is run by exactly one
 // goroutine at a time. Concurrent calls to Run on the same Runner are
 // undefined.
 type Runner struct {
-	// Name identifies the projection for checkpointing. Required.
-	Name string
+	name       string
+	store      es.SubscribableEventStore
+	reg        *es.Registry
+	projection es.Projection
+	checkpoint es.CheckpointStore
+	live       bool
+	stream     es.StreamID
+	onError    func(env es.Envelope, err error) bool
+	logger     *slog.Logger
+}
 
-	// Store is the source of events. Required.
-	Store es.SubscribableEventStore
+// runnerOptions collects the configurable knobs threaded through
+// [RunnerOption] values.
+type runnerOptions struct {
+	checkpoint es.CheckpointStore
+	live       bool
+	stream     es.StreamID
+	onError    func(env es.Envelope, err error) bool
+	logger     *slog.Logger
+}
 
-	// Registry decodes event payloads. Required.
-	Registry *es.Registry
+// RunnerOption configures a [Runner] at construction time.
+type RunnerOption func(*runnerOptions)
 
-	// Projection consumes decoded events. Required.
-	Projection es.Projection
+// WithCheckpoint installs a [es.CheckpointStore] for persisting
+// progress across restarts. Without one, every [Runner.Run] starts
+// from position 0 and progress is lost on shutdown.
+func WithCheckpoint(c es.CheckpointStore) RunnerOption {
+	return func(o *runnerOptions) { o.checkpoint = c }
+}
 
-	// Checkpoint persists progress across restarts. Optional; without
-	// one, every [Run] starts from position 0 and progress is lost on
-	// shutdown.
-	Checkpoint es.CheckpointStore
+// WithLive controls whether the underlying subscription blocks
+// waiting for new events after catching up. When false (the default),
+// Run terminates cleanly when the existing event log is exhausted.
+func WithLive(live bool) RunnerOption {
+	return func(o *runnerOptions) { o.live = live }
+}
 
-	// Live, when true, makes the underlying subscription block
-	// waiting for new events after catching up. When false, Run
-	// terminates cleanly when the existing event log is exhausted.
-	Live bool
+// WithStream scopes the Runner to a single stream via
+// [es.SubscribableEventStore.SubscribeStream]. Checkpoint positions
+// then track [es.RawEnvelope.Version] within that stream rather than
+// global position.
+func WithStream(stream es.StreamID) RunnerOption {
+	return func(o *runnerOptions) { o.stream = stream }
+}
 
-	// Stream, when non-empty, scopes the Runner to a single stream
-	// via [es.SubscribableEventStore.SubscribeStream]. Checkpoint
-	// positions then track [es.RawEnvelope.Version] within that
-	// stream rather than global position.
-	Stream es.StreamID
+// WithOnError installs an error handler invoked when
+// [es.Projection.Project] returns an error. Returning true tells the
+// Runner to skip the event (and still checkpoint past it) and
+// continue; returning false makes [Runner.Run] return the error.
+//
+// Without this option, Run returns on the first projection error.
+// Skipped events are logged at Warn level via the Runner's logger.
+func WithOnError(fn func(env es.Envelope, err error) bool) RunnerOption {
+	return func(o *runnerOptions) { o.onError = fn }
+}
 
-	// OnError, when non-nil, is consulted when [es.Projection.Project]
-	// returns an error. Returning true tells the Runner to skip the
-	// event (and still checkpoint past it) and continue; returning
-	// false makes [Run] return the error.
-	//
-	// When OnError is nil, Run returns on the first projection
-	// error. Skipped events are logged at Warn level via Logger.
-	OnError func(env es.Envelope, err error) bool
+// WithLogger overrides the [slog.Logger] used to record best-effort
+// warnings — currently, events skipped via the [WithOnError] handler.
+// The default is [slog.Default].
+func WithLogger(l *slog.Logger) RunnerOption {
+	return func(o *runnerOptions) { o.logger = l }
+}
 
-	// Logger records best-effort warnings — currently, events
-	// skipped via OnError. Nil falls back to [slog.Default].
-	Logger *slog.Logger
+// NewRunner constructs a [Runner] that consumes events from store,
+// decoding payloads through reg and applying them via proj. name
+// identifies the projection for checkpointing.
+//
+// Required arguments are positional; optional configuration is
+// expressed via [RunnerOption] values such as [WithCheckpoint],
+// [WithLive], [WithStream], [WithOnError], and [WithLogger].
+func NewRunner(
+	name string,
+	store es.SubscribableEventStore,
+	reg *es.Registry,
+	proj es.Projection,
+	opts ...RunnerOption,
+) *Runner {
+	o := runnerOptions{logger: slog.Default()}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &Runner{
+		name:       name,
+		store:      store,
+		reg:        reg,
+		projection: proj,
+		checkpoint: o.checkpoint,
+		live:       o.live,
+		stream:     o.stream,
+		onError:    o.onError,
+		logger:     o.logger,
+	}
 }
 
 // Run starts the subscription, loads the saved checkpoint (or 0),
-// decodes each event via Registry, and applies it via Projection.
-// After each successful Project (or OnError-skipped event) it saves
-// the new position to Checkpoint.
+// decodes each event via the codec registry, and applies it via the
+// projection. After each successful Project (or OnError-skipped event)
+// it saves the new position to the checkpoint store.
 //
 // Run returns:
 //
@@ -91,34 +144,26 @@ type Runner struct {
 //   - [es.CodecNotFoundError] when an event arrives whose type has no
 //     registered codec.
 //   - the projection's error when [es.Projection.Project] returns one
-//     and OnError does not request skip.
+//     and the OnError hook does not request skip.
 //   - a wrapped checkpoint error when the checkpoint Save fails.
 func (r *Runner) Run(ctx context.Context) error {
-	if err := r.validate(); err != nil {
-		return err
-	}
-	logger := r.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-
 	from := uint64(0)
-	if r.Checkpoint != nil {
-		pos, found, err := r.Checkpoint.Load(ctx, r.Name)
+	if r.checkpoint != nil {
+		pos, found, err := r.checkpoint.Load(ctx, r.name)
 		if err != nil {
-			return fmt.Errorf("synapse/projection: load checkpoint %q: %w", r.Name, err)
+			return fmt.Errorf("synapse/projection: load checkpoint %q: %w", r.name, err)
 		}
 		if found {
 			from = pos
 		}
 	}
 
-	opts := es.SubscriptionOptions{From: from, Live: r.Live}
+	opts := es.SubscriptionOptions{From: from, Live: r.live}
 	var seq iter.Seq2[es.RawEnvelope, error]
-	if r.Stream != "" {
-		seq = r.Store.SubscribeStream(ctx, r.Stream, opts)
+	if r.stream != "" {
+		seq = r.store.SubscribeStream(ctx, r.stream, opts)
 	} else {
-		seq = r.Store.Subscribe(ctx, opts)
+		seq = r.store.Subscribe(ctx, opts)
 	}
 
 	for raw, err := range seq {
@@ -134,12 +179,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 
-		if err := r.Projection.Project(ctx, env); err != nil {
-			if r.OnError == nil || !r.OnError(env, err) {
+		if err := r.projection.Project(ctx, env); err != nil {
+			if r.onError == nil || !r.onError(env, err) {
 				return err
 			}
-			logger.WarnContext(ctx, "synapse: projection error, skipping event",
-				"name", r.Name,
+			r.logger.WarnContext(ctx, "synapse: projection error, skipping event",
+				"name", r.name,
 				"type", env.Type,
 				"stream", env.StreamID,
 				"position", env.GlobalPosition,
@@ -147,42 +192,22 @@ func (r *Runner) Run(ctx context.Context) error {
 			)
 		}
 
-		if r.Checkpoint != nil {
+		if r.checkpoint != nil {
 			pos := raw.GlobalPosition
-			if r.Stream != "" {
+			if r.stream != "" {
 				pos = raw.Version
 			}
-			if err := r.Checkpoint.Save(ctx, r.Name, pos); err != nil {
+			if err := r.checkpoint.Save(ctx, r.name, pos); err != nil {
 				return fmt.Errorf("synapse/projection: save checkpoint %q at pos %d: %w",
-					r.Name, pos, err)
+					r.name, pos, err)
 			}
 		}
 	}
 	return nil
 }
 
-func (r *Runner) validate() error {
-	var missing []string
-	if r.Name == "" {
-		missing = append(missing, "Name")
-	}
-	if r.Store == nil {
-		missing = append(missing, "Store")
-	}
-	if r.Registry == nil {
-		missing = append(missing, "Registry")
-	}
-	if r.Projection == nil {
-		missing = append(missing, "Projection")
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("synapse/projection: Runner missing required fields: %v", missing)
-	}
-	return nil
-}
-
 func (r *Runner) decode(raw es.RawEnvelope) (es.Envelope, error) {
-	codec, ok := r.Registry.Lookup(raw.Type)
+	codec, ok := r.reg.Lookup(raw.Type)
 	if !ok {
 		return es.Envelope{}, &es.CodecNotFoundError{EventType: raw.Type}
 	}

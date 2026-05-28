@@ -35,14 +35,10 @@ func TestRunner_OnError_Skip_LogsWarning(t *testing.T) {
 		},
 	}
 
-	r := &projection.Runner{
-		Name:       "log-skipper",
-		Store:      store,
-		Registry:   reg,
-		Projection: proj,
-		OnError:    func(_ es.Envelope, _ error) bool { return true },
-		Logger:     logger,
-	}
+	r := projection.NewRunner("log-skipper", store, reg, proj,
+		projection.WithOnError(func(_ es.Envelope, _ error) bool { return true }),
+		projection.WithLogger(logger),
+	)
 	if err := r.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -74,10 +70,9 @@ func TestRunner_NoSkip_DoesNotLog(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	proj := &recordingProjection{}
-	r := &projection.Runner{
-		Name: "log-quiet", Store: store, Registry: reg, Projection: proj,
-		Logger: logger,
-	}
+	r := projection.NewRunner("log-quiet", store, reg, proj,
+		projection.WithLogger(logger),
+	)
 	if err := r.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

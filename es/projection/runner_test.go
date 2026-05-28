@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	checkpointmem "github.com/ianunruh/synapse/checkpointstore/memory"
 	"github.com/ianunruh/synapse/es"
 	"github.com/ianunruh/synapse/es/projection"
 	"github.com/ianunruh/synapse/eventstore/memory"
 	"github.com/ianunruh/synapse/internal/testdomain"
-	checkpointmem "github.com/ianunruh/synapse/checkpointstore/memory"
 )
 
 // recordingProjection captures every event Project receives. Optional
@@ -60,16 +60,6 @@ func seedCounters(t *testing.T, store *memory.Store, reg *es.Registry, streams i
 	}
 }
 
-// ----- Validation --------------------------------------------------------
-
-func TestRunner_RequiresFields(t *testing.T) {
-	r := &projection.Runner{}
-	err := r.Run(t.Context())
-	if err == nil {
-		t.Errorf("Run: expected error for empty Runner")
-	}
-}
-
 // ----- Catch-up subscriptions --------------------------------------------
 
 func TestRunner_GlobalSubscription_CatchUp(t *testing.T) {
@@ -79,13 +69,7 @@ func TestRunner_GlobalSubscription_CatchUp(t *testing.T) {
 	seedCounters(t, store, reg, 2, 3) // 2 streams x 3 events = 6 events total
 
 	proj := &recordingProjection{}
-	r := &projection.Runner{
-		Name:       "test",
-		Store:      store,
-		Registry:   reg,
-		Projection: proj,
-		Live:       false,
-	}
+	r := projection.NewRunner("test", store, reg, proj)
 	if err := r.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -111,13 +95,7 @@ func TestRunner_PerStreamSubscription_CatchUp(t *testing.T) {
 
 	target := es.StreamID(testdomain.CounterStream + "-b")
 	proj := &recordingProjection{}
-	r := &projection.Runner{
-		Name:       "test",
-		Store:      store,
-		Registry:   reg,
-		Projection: proj,
-		Stream:     target,
-	}
+	r := projection.NewRunner("test", store, reg, proj, projection.WithStream(target))
 	if err := r.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -145,13 +123,7 @@ func TestRunner_LiveMode_SeesNewEvents(t *testing.T) {
 	seedCounters(t, store, reg, 1, 2)
 
 	proj := &recordingProjection{}
-	r := &projection.Runner{
-		Name:       "live",
-		Store:      store,
-		Registry:   reg,
-		Projection: proj,
-		Live:       true,
-	}
+	r := projection.NewRunner("live", store, reg, proj, projection.WithLive(true))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()
@@ -215,13 +187,7 @@ func TestRunner_Checkpoint_ResumesAfterRestart(t *testing.T) {
 	seedCounters(t, store, reg, 1, 5)
 
 	proj1 := &recordingProjection{}
-	r1 := &projection.Runner{
-		Name:       "resumable",
-		Store:      store,
-		Registry:   reg,
-		Projection: proj1,
-		Checkpoint: cps,
-	}
+	r1 := projection.NewRunner("resumable", store, reg, proj1, projection.WithCheckpoint(cps))
 	if err := r1.Run(ctx); err != nil {
 		t.Fatalf("Run 1: %v", err)
 	}
@@ -247,13 +213,7 @@ func TestRunner_Checkpoint_ResumesAfterRestart(t *testing.T) {
 
 	// Second Runner should pick up only the new events.
 	proj2 := &recordingProjection{}
-	r2 := &projection.Runner{
-		Name:       "resumable",
-		Store:      store,
-		Registry:   reg,
-		Projection: proj2,
-		Checkpoint: cps,
-	}
+	r2 := projection.NewRunner("resumable", store, reg, proj2, projection.WithCheckpoint(cps))
 	if err := r2.Run(ctx); err != nil {
 		t.Fatalf("Run 2: %v", err)
 	}
@@ -270,10 +230,7 @@ func TestRunner_Reset_StartsFromBeginning(t *testing.T) {
 	seedCounters(t, store, reg, 1, 3)
 
 	proj1 := &recordingProjection{}
-	r1 := &projection.Runner{
-		Name: "rebuild", Store: store, Registry: reg,
-		Projection: proj1, Checkpoint: cps,
-	}
+	r1 := projection.NewRunner("rebuild", store, reg, proj1, projection.WithCheckpoint(cps))
 	if err := r1.Run(ctx); err != nil {
 		t.Fatalf("Run 1: %v", err)
 	}
@@ -284,10 +241,7 @@ func TestRunner_Reset_StartsFromBeginning(t *testing.T) {
 	}
 
 	proj2 := &recordingProjection{}
-	r2 := &projection.Runner{
-		Name: "rebuild", Store: store, Registry: reg,
-		Projection: proj2, Checkpoint: cps,
-	}
+	r2 := projection.NewRunner("rebuild", store, reg, proj2, projection.WithCheckpoint(cps))
 	if err := r2.Run(ctx); err != nil {
 		t.Fatalf("Run 2: %v", err)
 	}
@@ -315,9 +269,7 @@ func TestRunner_ProjectionError_StopsByDefault(t *testing.T) {
 		},
 	}
 
-	r := &projection.Runner{
-		Name: "fail", Store: store, Registry: reg, Projection: proj,
-	}
+	r := projection.NewRunner("fail", store, reg, proj)
 	err := r.Run(ctx)
 	if !errors.Is(err, boom) {
 		t.Errorf("Run: err = %v, want boom", err)
@@ -346,14 +298,13 @@ func TestRunner_OnError_Skip_ContinuesAndCheckpoints(t *testing.T) {
 	}
 
 	skipped := false
-	r := &projection.Runner{
-		Name: "skipper", Store: store, Registry: reg,
-		Projection: proj, Checkpoint: cps,
-		OnError: func(_ es.Envelope, _ error) bool {
+	r := projection.NewRunner("skipper", store, reg, proj,
+		projection.WithCheckpoint(cps),
+		projection.WithOnError(func(_ es.Envelope, _ error) bool {
 			skipped = true
 			return true
-		},
-	}
+		}),
+	)
 	if err := r.Run(ctx); err != nil {
 		t.Errorf("Run: %v", err)
 	}
@@ -391,10 +342,9 @@ func TestRunner_OnError_NoSkip_Stops(t *testing.T) {
 		},
 	}
 
-	r := &projection.Runner{
-		Name: "nostop", Store: store, Registry: reg, Projection: proj,
-		OnError: func(_ es.Envelope, _ error) bool { return false }, // never skip
-	}
+	r := projection.NewRunner("nostop", store, reg, proj,
+		projection.WithOnError(func(_ es.Envelope, _ error) bool { return false }),
+	)
 	err := r.Run(ctx)
 	if !errors.Is(err, boom) {
 		t.Errorf("Run: err = %v, want boom", err)
@@ -409,9 +359,7 @@ func TestRunner_UnknownEventType_FailsWithCodecError(t *testing.T) {
 
 	partial := es.NewRegistry() // no codecs registered
 	proj := &recordingProjection{}
-	r := &projection.Runner{
-		Name: "missing", Store: store, Registry: partial, Projection: proj,
-	}
+	r := projection.NewRunner("missing", store, partial, proj)
 	err := r.Run(ctx)
 	if !errors.Is(err, es.ErrCodecNotFound) {
 		t.Errorf("Run: err = %v, want wrap of ErrCodecNotFound", err)
@@ -426,9 +374,7 @@ func TestRunner_ContextCanceled_ReturnsCleanly(t *testing.T) {
 	store := memory.New()
 	reg := testdomain.NewRegistry()
 	proj := &recordingProjection{}
-	r := &projection.Runner{
-		Name: "ctx", Store: store, Registry: reg, Projection: proj, Live: true,
-	}
+	r := projection.NewRunner("ctx", store, reg, proj, projection.WithLive(true))
 
 	done := make(chan error, 1)
 	go func() { done <- r.Run(ctx) }()

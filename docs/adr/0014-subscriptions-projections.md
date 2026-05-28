@@ -59,19 +59,23 @@ type CheckpointStore interface {
 
 ### Runner
 
-Lives in `es/projection`. Public-field struct, `Run(ctx)` method:
+Lives in `es/projection`. Constructed via `NewRunner` with positional required arguments and functional options, mirroring `NewRepository` (see [ADR-0016](0016-constructor-pattern.md)). The Runner type itself has unexported fields:
 
 ```go
-type Runner struct {
-    Name       string
-    Store      es.SubscribableEventStore
-    Registry   *es.Registry
-    Projection es.Projection
-    Checkpoint es.CheckpointStore
-    Live       bool
-    Stream     es.StreamID // optional — scope to one stream
-    OnError    func(env Envelope, err error) bool
-}
+func NewRunner(
+    name string,
+    store es.SubscribableEventStore,
+    reg *es.Registry,
+    proj es.Projection,
+    opts ...RunnerOption,
+) *Runner
+
+// Optional configuration:
+func WithCheckpoint(es.CheckpointStore) RunnerOption
+func WithLive(bool) RunnerOption
+func WithStream(es.StreamID) RunnerOption          // scope to one stream
+func WithOnError(func(env, err) bool) RunnerOption
+func WithLogger(*slog.Logger) RunnerOption
 ```
 
 Flow:
