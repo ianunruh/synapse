@@ -3,8 +3,8 @@ package es
 import "iter"
 
 // Aggregate is the unit of consistency in event sourcing. Concrete
-// aggregate types embed [AggregateBase] to satisfy most of the interface; only
-// Apply needs domain-specific logic.
+// aggregate types embed [AggregateBase] to satisfy most of the
+// interface; only Apply needs domain-specific logic.
 //
 //	type Order struct {
 //	    *es.AggregateBase
@@ -29,10 +29,17 @@ type Aggregate interface {
 	// Newly constructed aggregates report 0.
 	Version() uint64
 
-	// Apply mutates aggregate state in response to a single event.
-	// It is invoked both during rehydration (events loaded from the
+	// Apply mutates aggregate state in response to a single event. It
+	// is invoked both during rehydration (events loaded from the
 	// store) and immediately after a new event is recorded.
 	Apply(env Envelope) error
+
+	// SetVersion advances the aggregate's loaded version. The
+	// [Repository] calls SetVersion after each Apply during
+	// rehydration so the aggregate's version tracks the stream's head.
+	// Domain code should not call SetVersion directly; embedders of
+	// [AggregateBase] get a correct implementation for free.
+	SetVersion(v uint64)
 
 	// Pending returns the events that have been recorded but not yet
 	// persisted. The slice is read-only from the caller's perspective.
@@ -43,9 +50,9 @@ type Aggregate interface {
 	ClearPending()
 }
 
-// AggregateBase is an embeddable struct that supplies the bookkeeping every
-// aggregate needs: stream identity, version tracking, and a pending
-// event buffer.
+// AggregateBase is an embeddable struct that supplies the bookkeeping
+// every aggregate needs: stream identity, version tracking, and a
+// pending event buffer.
 //
 // Embed by pointer so the embedding type can mutate state through
 // (*AggregateBase).Record:
@@ -53,8 +60,7 @@ type Aggregate interface {
 //	type Order struct { *es.AggregateBase; /* domain fields */ }
 //
 //	func NewOrder(id OrderID) *Order {
-//	    b := es.NewAggregateBase(id.Stream())
-//	    return &Order{AggregateBase: &b}
+//	    return &Order{AggregateBase: es.NewAggregateBase(id.Stream())}
 //	}
 type AggregateBase struct {
 	streamID StreamID
@@ -62,14 +68,19 @@ type AggregateBase struct {
 	pending  []Envelope
 }
 
-// NewAggregateBase returns a AggregateBase bound to the given stream id at version 0.
-func NewAggregateBase(id StreamID) AggregateBase { return AggregateBase{streamID: id} }
+// NewAggregateBase returns an [AggregateBase] bound to id at version 0.
+func NewAggregateBase(id StreamID) *AggregateBase {
+	return &AggregateBase{streamID: id}
+}
 
 // StreamID implements [Aggregate].
 func (b *AggregateBase) StreamID() StreamID { return b.streamID }
 
 // Version implements [Aggregate].
 func (b *AggregateBase) Version() uint64 { return b.version }
+
+// SetVersion implements [Aggregate].
+func (b *AggregateBase) SetVersion(v uint64) { b.version = v }
 
 // Pending implements [Aggregate].
 func (b *AggregateBase) Pending() []Envelope { return b.pending }
@@ -87,8 +98,8 @@ func (b *AggregateBase) ClearPending() {
 //
 // The apply callback is typically the embedder's own Apply method.
 // Threading it through Record explicitly avoids the runtime cost of
-// reflection while keeping AggregateBase unaware of the concrete aggregate
-// type.
+// reflection while keeping AggregateBase unaware of the concrete
+// aggregate type.
 //
 // If apply returns an error, the version is left unchanged and the
 // envelope is not queued.
@@ -108,12 +119,13 @@ func (b *AggregateBase) Record(eventType string, payload any, apply func(Envelop
 	return nil
 }
 
-// ReplayAll advances AggregateBase across events loaded from history, invoking
-// apply for each one. It does not enqueue events for persistence;
-// rehydration is read-only with respect to the store.
+// ReplayAll advances AggregateBase across events loaded from history,
+// invoking apply for each one. It does not enqueue events for
+// persistence; rehydration is read-only with respect to the store.
 //
-// A [Repository] uses this internally; callers writing custom load
-// paths can reuse it.
+// The [Repository] does not use ReplayAll (it advances version through
+// [Aggregate.SetVersion] so it can interleave codec lookups), but
+// callers writing custom load paths can reuse it for convenience.
 func (b *AggregateBase) ReplayAll(events iter.Seq2[Envelope, error], apply func(Envelope) error) error {
 	for env, err := range events {
 		if err != nil {
@@ -128,9 +140,9 @@ func (b *AggregateBase) ReplayAll(events iter.Seq2[Envelope, error], apply func(
 }
 
 // FoldEvents is a generic helper for callers who prefer a pure-reducer
-// style over the [Aggregate]/[AggregateBase] approach: given an initial state
-// and a sequence of envelopes, fold step over them and return the
-// resulting state.
+// style over the [Aggregate]/[AggregateBase] approach: given an
+// initial state and a sequence of envelopes, fold step over them and
+// return the resulting state.
 //
 // FoldEvents is independent of the [Repository] machinery and is
 // useful for projections, read-model rebuilds, and ad-hoc analysis.
