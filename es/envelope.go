@@ -28,6 +28,14 @@ type Envelope struct {
 	// Version is the 1-based position of this event within its stream.
 	Version uint64
 
+	// GlobalPosition is the 1-based position of this event in the
+	// store's global append order, across all streams. It is assigned
+	// by the [EventStore] on Append and surfaces through Load and
+	// [SubscribableEventStore.Subscribe]. The Repository and the
+	// command-side code paths ignore it; it is meaningful primarily
+	// to subscription consumers.
+	GlobalPosition uint64
+
 	// RecordedAt is the wall-clock time at which the event was appended.
 	RecordedAt time.Time
 
@@ -62,14 +70,15 @@ type Envelope struct {
 // The field set mirrors [Envelope] so backends can persist a single
 // flat row without consulting a schema.
 type RawEnvelope struct {
-	EventID     string
-	StreamID    StreamID
-	Version     uint64
-	RecordedAt  time.Time
-	Type        string
-	ContentType ContentType
-	Causation   string
-	Correlation string
-	Metadata    Metadata
-	Payload     []byte
+	EventID        string
+	StreamID       StreamID
+	Version        uint64
+	GlobalPosition uint64
+	RecordedAt     time.Time
+	Type           string
+	ContentType    ContentType
+	Causation      string
+	Correlation    string
+	Metadata       Metadata
+	Payload        []byte
 }

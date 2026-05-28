@@ -1,0 +1,448 @@
+package projection_test
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/ianunruh/synapse/es"
+	"github.com/ianunruh/synapse/es/projection"
+	"github.com/ianunruh/synapse/eventstore/memory"
+	"github.com/ianunruh/synapse/internal/testdomain"
+	checkpointmem "github.com/ianunruh/synapse/checkpointstore/memory"
+)
+
+// recordingProjection captures every event Project receives. Optional
+// failOn callback returns a non-nil error for matching events.
+type recordingProjection struct {
+	mu     sync.Mutex
+	events []es.Envelope
+	failOn func(es.Envelope) error
+}
+
+func (p *recordingProjection) Project(_ context.Context, env es.Envelope) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, env)
+	if p.failOn != nil {
+		return p.failOn(env)
+	}
+	return nil
+}
+
+func (p *recordingProjection) Recorded() []es.Envelope {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.events)
+}
+
+// ----- Helpers -----------------------------------------------------------
+
+func seedCounters(t *testing.T, store *memory.Store, reg *es.Registry, streams int, events int) {
+	t.Helper()
+	ctx := t.Context()
+	repo := es.NewRepository(store, reg, testdomain.NewCounter)
+	for s := range streams {
+		stream := es.StreamID(testdomain.CounterStream + es.StreamID("-") + es.StreamID(rune('a'+s)))
+		c := testdomain.NewCounter(stream)
+		for i := range events {
+			if err := c.Increment(i + 1); err != nil {
+				t.Fatalf("seed Increment: %v", err)
+			}
+		}
+		if err := repo.Save(ctx, c); err != nil {
+			t.Fatalf("seed Save: %v", err)
+		}
+	}
+}
+
+// ----- Validation --------------------------------------------------------
+
+func TestRunner_RequiresFields(t *testing.T) {
+	r := &projection.Runner{}
+	err := r.Run(t.Context())
+	if err == nil {
+		t.Errorf("Run: expected error for empty Runner")
+	}
+}
+
+// ----- Catch-up subscriptions --------------------------------------------
+
+func TestRunner_GlobalSubscription_CatchUp(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	seedCounters(t, store, reg, 2, 3) // 2 streams x 3 events = 6 events total
+
+	proj := &recordingProjection{}
+	r := &projection.Runner{
+		Name:       "test",
+		Store:      store,
+		Registry:   reg,
+		Projection: proj,
+		Live:       false,
+	}
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := len(proj.Recorded()); got != 6 {
+		t.Errorf("recorded %d events, want 6", got)
+	}
+	// Verify global ordering: GlobalPosition is monotonic.
+	var last uint64
+	for _, e := range proj.Recorded() {
+		if e.GlobalPosition <= last {
+			t.Errorf("GlobalPosition not monotonic: %d after %d", e.GlobalPosition, last)
+		}
+		last = e.GlobalPosition
+	}
+}
+
+func TestRunner_PerStreamSubscription_CatchUp(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	seedCounters(t, store, reg, 3, 4) // 3 streams x 4 events
+
+	target := es.StreamID(testdomain.CounterStream + "-b")
+	proj := &recordingProjection{}
+	r := &projection.Runner{
+		Name:       "test",
+		Store:      store,
+		Registry:   reg,
+		Projection: proj,
+		Stream:     target,
+	}
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := len(proj.Recorded()); got != 4 {
+		t.Errorf("recorded %d events, want 4 (one stream)", got)
+	}
+	for _, e := range proj.Recorded() {
+		if e.StreamID != target {
+			t.Errorf("event from %q, want %q", e.StreamID, target)
+		}
+	}
+}
+
+// ----- Live mode ---------------------------------------------------------
+
+func TestRunner_LiveMode_SeesNewEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+
+	// Seed two events first.
+	seedCounters(t, store, reg, 1, 2)
+
+	proj := &recordingProjection{}
+	r := &projection.Runner{
+		Name:       "live",
+		Store:      store,
+		Registry:   reg,
+		Projection: proj,
+		Live:       true,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// Wait for the runner to consume the initial events.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(proj.Recorded()) == 2 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := len(proj.Recorded()); got != 2 {
+		t.Fatalf("after seed: recorded %d, want 2", got)
+	}
+
+	// Append more events live.
+	repo := es.NewRepository(store, reg, testdomain.NewCounter)
+	stream := es.StreamID(testdomain.CounterStream + "-a")
+	loaded, err := repo.Load(ctx, stream)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := loaded.Increment(99); err != nil {
+		t.Fatalf("Increment: %v", err)
+	}
+	if err := repo.Save(ctx, loaded); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Verify the runner sees the new event.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(proj.Recorded()) == 3 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := len(proj.Recorded()); got != 3 {
+		t.Errorf("after live append: recorded %d, want 3", got)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run after cancel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Errorf("Run did not exit after cancel")
+	}
+}
+
+// ----- Checkpoint integration --------------------------------------------
+
+func TestRunner_Checkpoint_ResumesAfterRestart(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	cps := checkpointmem.New()
+	seedCounters(t, store, reg, 1, 5)
+
+	proj1 := &recordingProjection{}
+	r1 := &projection.Runner{
+		Name:       "resumable",
+		Store:      store,
+		Registry:   reg,
+		Projection: proj1,
+		Checkpoint: cps,
+	}
+	if err := r1.Run(ctx); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	if got := len(proj1.Recorded()); got != 5 {
+		t.Fatalf("first Run recorded %d, want 5", got)
+	}
+
+	// Append more events.
+	repo := es.NewRepository(store, reg, testdomain.NewCounter)
+	stream := es.StreamID(testdomain.CounterStream + "-a")
+	loaded, err := repo.Load(ctx, stream)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for range 2 {
+		if err := loaded.Increment(10); err != nil {
+			t.Fatalf("Increment: %v", err)
+		}
+	}
+	if err := repo.Save(ctx, loaded); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Second Runner should pick up only the new events.
+	proj2 := &recordingProjection{}
+	r2 := &projection.Runner{
+		Name:       "resumable",
+		Store:      store,
+		Registry:   reg,
+		Projection: proj2,
+		Checkpoint: cps,
+	}
+	if err := r2.Run(ctx); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	if got := len(proj2.Recorded()); got != 2 {
+		t.Errorf("second Run recorded %d, want 2 (only new events past checkpoint)", got)
+	}
+}
+
+func TestRunner_Reset_StartsFromBeginning(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	cps := checkpointmem.New()
+	seedCounters(t, store, reg, 1, 3)
+
+	proj1 := &recordingProjection{}
+	r1 := &projection.Runner{
+		Name: "rebuild", Store: store, Registry: reg,
+		Projection: proj1, Checkpoint: cps,
+	}
+	if err := r1.Run(ctx); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+
+	// Reset the checkpoint and re-run.
+	if err := cps.Reset(ctx, "rebuild"); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	proj2 := &recordingProjection{}
+	r2 := &projection.Runner{
+		Name: "rebuild", Store: store, Registry: reg,
+		Projection: proj2, Checkpoint: cps,
+	}
+	if err := r2.Run(ctx); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	if got := len(proj2.Recorded()); got != 3 {
+		t.Errorf("after reset: recorded %d, want 3 (full replay)", got)
+	}
+}
+
+// ----- Error policy ------------------------------------------------------
+
+func TestRunner_ProjectionError_StopsByDefault(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	seedCounters(t, store, reg, 1, 5)
+
+	boom := errors.New("kaboom")
+	var calls atomic.Int32
+	proj := &recordingProjection{
+		failOn: func(_ es.Envelope) error {
+			if calls.Add(1) == 3 {
+				return boom
+			}
+			return nil
+		},
+	}
+
+	r := &projection.Runner{
+		Name: "fail", Store: store, Registry: reg, Projection: proj,
+	}
+	err := r.Run(ctx)
+	if !errors.Is(err, boom) {
+		t.Errorf("Run: err = %v, want boom", err)
+	}
+	if got := len(proj.Recorded()); got != 3 {
+		t.Errorf("recorded %d, want 3 (stopped at failing event)", got)
+	}
+}
+
+func TestRunner_OnError_Skip_ContinuesAndCheckpoints(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	cps := checkpointmem.New()
+	seedCounters(t, store, reg, 1, 5)
+
+	boom := errors.New("transient")
+	var calls atomic.Int32
+	proj := &recordingProjection{
+		failOn: func(_ es.Envelope) error {
+			if calls.Add(1) == 3 {
+				return boom
+			}
+			return nil
+		},
+	}
+
+	skipped := false
+	r := &projection.Runner{
+		Name: "skipper", Store: store, Registry: reg,
+		Projection: proj, Checkpoint: cps,
+		OnError: func(_ es.Envelope, _ error) bool {
+			skipped = true
+			return true
+		},
+	}
+	if err := r.Run(ctx); err != nil {
+		t.Errorf("Run: %v", err)
+	}
+	if !skipped {
+		t.Errorf("OnError was never called")
+	}
+	if got := len(proj.Recorded()); got != 5 {
+		t.Errorf("recorded %d, want 5 (skip + continue)", got)
+	}
+
+	// Checkpoint should be past the failing event.
+	pos, found, err := cps.Load(ctx, "skipper")
+	if err != nil {
+		t.Fatalf("checkpoint Load: %v", err)
+	}
+	if !found || pos != 5 {
+		t.Errorf("checkpoint = (%d, %v), want (5, true)", pos, found)
+	}
+}
+
+func TestRunner_OnError_NoSkip_Stops(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	seedCounters(t, store, reg, 1, 5)
+
+	boom := errors.New("permanent")
+	var calls atomic.Int32
+	proj := &recordingProjection{
+		failOn: func(_ es.Envelope) error {
+			if calls.Add(1) == 2 {
+				return boom
+			}
+			return nil
+		},
+	}
+
+	r := &projection.Runner{
+		Name: "nostop", Store: store, Registry: reg, Projection: proj,
+		OnError: func(_ es.Envelope, _ error) bool { return false }, // never skip
+	}
+	err := r.Run(ctx)
+	if !errors.Is(err, boom) {
+		t.Errorf("Run: err = %v, want boom", err)
+	}
+}
+
+func TestRunner_UnknownEventType_FailsWithCodecError(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	full := testdomain.NewRegistry()
+	seedCounters(t, store, full, 1, 2)
+
+	partial := es.NewRegistry() // no codecs registered
+	proj := &recordingProjection{}
+	r := &projection.Runner{
+		Name: "missing", Store: store, Registry: partial, Projection: proj,
+	}
+	err := r.Run(ctx)
+	if !errors.Is(err, es.ErrCodecNotFound) {
+		t.Errorf("Run: err = %v, want wrap of ErrCodecNotFound", err)
+	}
+}
+
+// ----- Context cancellation ---------------------------------------------
+
+func TestRunner_ContextCanceled_ReturnsCleanly(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	proj := &recordingProjection{}
+	r := &projection.Runner{
+		Name: "ctx", Store: store, Registry: reg, Projection: proj, Live: true,
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// Let it block waiting for events, then cancel.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run: err = %v, want nil on cancel", err)
+		}
+	case <-time.After(time.Second):
+		t.Errorf("Run did not exit on cancel")
+	}
+}
