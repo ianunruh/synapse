@@ -1,5 +1,6 @@
 # Compiled binaries from `go build` without -o
 /counter
+/order
 /persistent
 /projection
 

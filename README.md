@@ -101,6 +101,7 @@ The repo is a Go workspace. Core interfaces live in `es`; backends and contract 
 | `checkpointstore/sqlite` | sibling | SQLite checkpoint store |
 | `checkpointstore/checkpointstoretest` | root | Backend contract test suite |
 | `examples/counter` | root | In-memory event sourcing walkthrough |
+| `examples/order` | root | Multi-stage aggregate with command validation |
 | `examples/projection` | root | Projection runner walkthrough |
 | `examples/persistent` | sibling | SQLite-backed end-to-end demo |
 
