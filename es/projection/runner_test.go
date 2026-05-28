@@ -50,9 +50,7 @@ func seedCounters(t *testing.T, store *memory.Store, reg *es.Registry, streams i
 		stream := es.StreamID(testdomain.CounterStream + es.StreamID("-") + es.StreamID(rune('a'+s)))
 		c := testdomain.NewCounter(stream)
 		for i := range events {
-			if err := c.Increment(i + 1); err != nil {
-				t.Fatalf("seed Increment: %v", err)
-			}
+			c.Increment(i + 1)
 		}
 		if err := repo.Save(ctx, c); err != nil {
 			t.Fatalf("seed Save: %v", err)
@@ -147,9 +145,7 @@ func TestRunner_LiveMode_SeesNewEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := loaded.Increment(99); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	loaded.Increment(99)
 	if err := repo.Save(ctx, loaded); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -203,9 +199,7 @@ func TestRunner_Checkpoint_ResumesAfterRestart(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	for range 2 {
-		if err := loaded.Increment(10); err != nil {
-			t.Fatalf("Increment: %v", err)
-		}
+		loaded.Increment(10)
 	}
 	if err := repo.Save(ctx, loaded); err != nil {
 		t.Fatalf("Save: %v", err)

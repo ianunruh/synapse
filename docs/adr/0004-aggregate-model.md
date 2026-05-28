@@ -9,9 +9,10 @@ We needed to choose how application code expresses an aggregate: as a pure value
 
 ## Decision
 
-- `Aggregate` is an interface: `StreamID()`, `Version()`, `Apply(Envelope) error`, `SetVersion(uint64)`, `Pending() []Envelope`, `ClearPending()`. `SetVersion` is called by the [Repository] after each `Apply` during rehydration so the aggregate's version tracks the stream head; embedders of [AggregateBase] get a correct implementation for free.
+- `Aggregate` is an interface: `StreamID()`, `Version()`, `Apply(Envelope)`, `SetVersion(uint64)`, `Pending() []Envelope`, `ClearPending()`. `SetVersion` is called by the [Repository] after each `Apply` during rehydration so the aggregate's version tracks the stream head; embedders of [AggregateBase] get a correct implementation for free.
 - The package ships an embeddable `AggregateBase` struct that satisfies most of the interface. Domain types embed `*AggregateBase` and write only the type-specific `Apply` method.
-- New events are recorded by calling `(*AggregateBase).Record(eventType, payload, apply)`. The `apply` argument is typically the embedder's own `Apply` method; threading it explicitly avoids reflection without making `AggregateBase` aware of the concrete aggregate type. On apply error, the version is left unchanged and the envelope is not queued.
+- `Apply` does not return an error. Events are facts that already happened: refusing to apply one during rehydration cannot unmake the past, and validation of recordable events belongs in the command method that calls `Record`, before the event is added to the pending queue.
+- New events are recorded by calling `(*AggregateBase).Record(eventType, payload, apply)`. The `apply` argument is typically the embedder's own `Apply` method; threading it explicitly avoids reflection without making `AggregateBase` aware of the concrete aggregate type.
 - A generic `FoldEvents[S]` helper is provided for ad-hoc projections and read-model rebuilds that want a pure reducer style. It does not flow through the `Repository`.
 - **v0 supports the accumulator pattern only.** A functional `RunCommand` helper may be added in a later milestone if demand warrants it.
 

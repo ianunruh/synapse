@@ -122,9 +122,7 @@ func TestExecute_PerAggregateLocking_PreventsConflicts(t *testing.T) {
 		es.WithMiddleware(middleware.PerAggregateLocking()))
 
 	seed := testdomain.NewCounter(testdomain.CounterStream)
-	if err := seed.Increment(0); err != nil {
-		t.Fatalf("seed Increment: %v", err)
-	}
+	seed.Increment(0)
 	if err := repo.Save(ctx, seed); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}

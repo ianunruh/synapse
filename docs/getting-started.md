@@ -81,19 +81,20 @@ type CounterIncremented struct {
 `Apply` mutates state from a decoded event:
 
 ```go
-func (c *Counter) Apply(env es.Envelope) error {
+func (c *Counter) Apply(env es.Envelope) {
     if inc, ok := env.Payload.(CounterIncremented); ok {
         c.Value += inc.By
     }
-    return nil
 }
 ```
+
+`Apply` does not return an error — events are facts that already happened; refusing to apply one during rehydration cannot unmake the past. Validate before recording, in the command method.
 
 Methods that "do something" record an event via the embedded `Record` helper:
 
 ```go
-func (c *Counter) Increment(by int) error {
-    return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+func (c *Counter) Increment(by int) {
+    c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
 }
 ```
 
@@ -131,8 +132,8 @@ import "context"
 ctx := context.Background()
 
 c := NewCounter("counter/hits")
-_ = c.Increment(2)
-_ = c.Increment(3)
+c.Increment(2)
+c.Increment(3)
 _ = repo.Save(ctx, c)
 ```
 
@@ -155,7 +156,8 @@ type IncrementCmd struct {
 }
 
 func IncrementHandler(_ context.Context, cmd IncrementCmd, c *Counter) error {
-    return c.Increment(cmd.By)
+    c.Increment(cmd.By)
+    return nil
 }
 
 _ = es.Execute(ctx, repo, "counter/hits", IncrementCmd{By: 7}, IncrementHandler)

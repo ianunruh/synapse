@@ -12,14 +12,13 @@ import "iter"
 //	    total  int
 //	}
 //
-//	func (o *Order) Apply(env es.Envelope) error {
+//	func (o *Order) Apply(env es.Envelope) {
 //	    switch p := env.Payload.(type) {
 //	    case OrderPlaced:
 //	        o.status, o.total = "placed", p.Total
 //	    case OrderShipped:
 //	        o.status = "shipped"
 //	    }
-//	    return nil
 //	}
 type Aggregate interface {
 	// StreamID returns the stream this aggregate writes to and loads from.
@@ -32,7 +31,13 @@ type Aggregate interface {
 	// Apply mutates aggregate state in response to a single event. It
 	// is invoked both during rehydration (events loaded from the
 	// store) and immediately after a new event is recorded.
-	Apply(env Envelope) error
+	//
+	// Apply must not fail. Events are facts that already happened:
+	// refusing to apply one during rehydration cannot unmake the past,
+	// and validation of recordable events belongs in the command method
+	// that calls Record, before the event is added to the pending
+	// queue.
+	Apply(env Envelope)
 
 	// SetVersion advances the aggregate's loaded version. The
 	// [Repository] calls SetVersion after each Apply during
@@ -94,16 +99,16 @@ func (b *AggregateBase) ClearPending() {
 // Record stages a new event on the aggregate. It composes an
 // [Envelope] from the embedder's stream id and the next version
 // number, invokes apply so the aggregate's in-memory state reflects
-// the change, and on success queues the envelope for the next save.
+// the change, and queues the envelope for the next save.
 //
 // The apply callback is typically the embedder's own Apply method.
 // Threading it through Record explicitly avoids the runtime cost of
 // reflection while keeping AggregateBase unaware of the concrete
 // aggregate type.
 //
-// If apply returns an error, the version is left unchanged and the
-// envelope is not queued.
-func (b *AggregateBase) Record(eventType string, payload any, apply func(Envelope) error) error {
+// Validation of recordable events should happen in the command method
+// that calls Record, before Record is invoked.
+func (b *AggregateBase) Record(eventType string, payload any, apply func(Envelope)) {
 	next := b.version + 1
 	env := Envelope{
 		StreamID: b.streamID,
@@ -111,12 +116,9 @@ func (b *AggregateBase) Record(eventType string, payload any, apply func(Envelop
 		Type:     eventType,
 		Payload:  payload,
 	}
-	if err := apply(env); err != nil {
-		return err
-	}
+	apply(env)
 	b.version = next
 	b.pending = append(b.pending, env)
-	return nil
 }
 
 // ReplayAll advances AggregateBase across events loaded from history,
@@ -126,14 +128,17 @@ func (b *AggregateBase) Record(eventType string, payload any, apply func(Envelop
 // The [Repository] does not use ReplayAll (it advances version through
 // [Aggregate.SetVersion] so it can interleave codec lookups), but
 // callers writing custom load paths can reuse it for convenience.
-func (b *AggregateBase) ReplayAll(events iter.Seq2[Envelope, error], apply func(Envelope) error) error {
+//
+// ReplayAll's apply callback does not return an error; events are
+// facts that already happened. The returned error is only ever the
+// terminal error yielded by the events iterator (typically an
+// [EventStore] read failure).
+func (b *AggregateBase) ReplayAll(events iter.Seq2[Envelope, error], apply func(Envelope)) error {
 	for env, err := range events {
 		if err != nil {
 			return err
 		}
-		if err := apply(env); err != nil {
-			return err
-		}
+		apply(env)
 		b.version = env.Version
 	}
 	return nil
@@ -146,6 +151,8 @@ func (b *AggregateBase) ReplayAll(events iter.Seq2[Envelope, error], apply func(
 //
 // FoldEvents is independent of the [Repository] machinery and is
 // useful for projections, read-model rebuilds, and ad-hoc analysis.
+// The step function may return an error (FoldEvents is not constrained
+// to aggregate semantics; it is a general reducer).
 func FoldEvents[S any](
 	init S,
 	events iter.Seq2[Envelope, error],

@@ -65,18 +65,10 @@ func TestRepository_SaveAndLoad_RoundTrip(t *testing.T) {
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(5); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
-	if err := c.Increment(3); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
-	if err := c.Reset(); err != nil {
-		t.Fatalf("Reset: %v", err)
-	}
-	if err := c.Increment(2); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(5)
+	c.Increment(3)
+	c.Reset()
+	c.Increment(2)
 	if c.Count != 2 {
 		t.Errorf("count after events = %d, want 2", c.Count)
 	}
@@ -122,8 +114,8 @@ func TestRepository_Save_ConcurrentModification(t *testing.T) {
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(5)
-	_ = c.Increment(3)
+	c.Increment(5)
+	c.Increment(3)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -137,8 +129,8 @@ func TestRepository_Save_ConcurrentModification(t *testing.T) {
 		t.Fatalf("Load c2: %v", err)
 	}
 
-	_ = c1.Increment(1)
-	_ = c2.Increment(2)
+	c1.Increment(1)
+	c2.Increment(2)
 
 	if err := repo.Save(ctx, c1); err != nil {
 		t.Fatalf("Save c1: %v", err)
@@ -163,8 +155,8 @@ func TestRepository_Save_StampsIdentityAndTime(t *testing.T) {
 		es.WithClock(clock), es.WithIDGenerator(idgen))
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(1)
-	_ = c.Increment(2)
+	c.Increment(1)
+	c.Increment(2)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -199,7 +191,7 @@ func TestRepository_Save_DefaultIDGenerator_UUIDv7Shape(t *testing.T) {
 	repo := es.NewRepository(store, testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(1)
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -229,7 +221,7 @@ func TestRepository_Save_UnknownEventType_ReturnsCodecError(t *testing.T) {
 	repo := es.NewRepository(memory.New(), es.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(1)
+	c.Increment(1)
 
 	err := repo.Save(ctx, c)
 	if !errors.Is(err, es.ErrCodecNotFound) {
@@ -248,7 +240,7 @@ func TestRepository_Load_UnknownEventType_ReturnsCodecError(t *testing.T) {
 	// Seed with a full registry
 	repo := es.NewRepository(store, testdomain.NewRegistry(), testdomain.NewCounter)
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(1)
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -265,7 +257,7 @@ func TestExecute_LoadHandleSave(t *testing.T) {
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(5)
+	c.Increment(5)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -303,7 +295,7 @@ func TestExecute_HandlerError_NoSave(t *testing.T) {
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(1)
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -329,7 +321,7 @@ func TestRepository_NewAggregate_FreshStream(t *testing.T) {
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c.Increment(42)
+	c.Increment(42)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -343,7 +335,7 @@ func TestRepository_NewAggregate_FreshStream(t *testing.T) {
 	}
 
 	c2 := testdomain.NewCounter(testdomain.CounterStream)
-	_ = c2.Increment(1)
+	c2.Increment(1)
 	if err := repo.Save(ctx, c2); !errors.Is(err, es.ErrConflict) {
 		t.Errorf("second Save: err = %v, want wrap of ErrConflict", err)
 	}

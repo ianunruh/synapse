@@ -55,22 +55,21 @@ type CounterIncremented struct {
 	By int `json:"by"`
 }
 
-func (c *Counter) Apply(env es.Envelope) error {
+func (c *Counter) Apply(env es.Envelope) {
 	switch p := env.Payload.(type) {
 	case CounterCreated:
 		c.Name = p.Name
 	case CounterIncremented:
 		c.Value += p.By
 	}
-	return nil
 }
 
-func (c *Counter) Create(name string) error {
-	return c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
+func (c *Counter) Create(name string) {
+	c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
 }
 
-func (c *Counter) Increment(by int) error {
-	return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+func (c *Counter) Increment(by int) {
+	c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
 }
 
 // --- Projection -----------------------------------------------------
@@ -144,13 +143,9 @@ func main() {
 	fmt.Println("== seeding 3 counters")
 	for _, s := range streams {
 		c := NewCounter(s.id)
-		if err := c.Create(s.name); err != nil {
-			log.Fatalf("Create: %v", err)
-		}
+		c.Create(s.name)
 		for _, by := range []int{2, 3, 5} {
-			if err := c.Increment(by); err != nil {
-				log.Fatalf("Increment: %v", err)
-			}
+			c.Increment(by)
 		}
 		if err := repo.Save(ctx, c); err != nil {
 			log.Fatalf("Save: %v", err)
@@ -178,9 +173,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Load: %v", err)
 		}
-		if err := loaded.Increment(100); err != nil {
-			log.Fatalf("Increment: %v", err)
-		}
+		loaded.Increment(100)
 		if err := repo.Save(ctx, loaded); err != nil {
 			log.Fatalf("Save: %v", err)
 		}
@@ -243,9 +236,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Load: %v", err)
 		}
-		if err := loaded.Increment(50); err != nil {
-			log.Fatalf("Increment: %v", err)
-		}
+		loaded.Increment(50)
 		if err := repo.Save(ctx, loaded); err != nil {
 			log.Fatalf("Save: %v", err)
 		}

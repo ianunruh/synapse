@@ -42,15 +42,14 @@ type CounterIncremented struct {
     By int `json:"by"`
 }
 
-func (c *Counter) Apply(env es.Envelope) error {
+func (c *Counter) Apply(env es.Envelope) {
     if inc, ok := env.Payload.(CounterIncremented); ok {
         c.Value += inc.By
     }
-    return nil
 }
 
-func (c *Counter) Increment(by int) error {
-    return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+func (c *Counter) Increment(by int) {
+    c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
 }
 
 func main() {
@@ -62,8 +61,8 @@ func main() {
     repo := es.NewRepository(memory.New(), reg, NewCounter)
 
     c := NewCounter("counter/hits")
-    _ = c.Increment(2)
-    _ = c.Increment(3)
+    c.Increment(2)
+    c.Increment(3)
     _ = repo.Save(ctx, c)
 
     loaded, _ := repo.Load(ctx, "counter/hits")

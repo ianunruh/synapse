@@ -52,9 +52,7 @@ func TestRepository_SaveSnapshot_NoStoreConfigured_Errors(t *testing.T) {
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(1); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -71,12 +69,8 @@ func TestRepository_SaveSnapshot_Manual_PersistsSnapshot(t *testing.T) {
 		es.WithSnapshotStore(snaps))
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(5); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
-	if err := c.Increment(3); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(5)
+	c.Increment(3)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -118,9 +112,7 @@ func TestRepository_Load_WithSnapshot_ReplaysOnlyNewerEvents(t *testing.T) {
 	// Seed 5 events, snapshot at v=5, then add 2 more events.
 	c := testdomain.NewCounter(testdomain.CounterStream)
 	for range 5 {
-		if err := c.Increment(1); err != nil {
-			t.Fatalf("Increment: %v", err)
-		}
+		c.Increment(1)
 	}
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -129,12 +121,8 @@ func TestRepository_Load_WithSnapshot_ReplaysOnlyNewerEvents(t *testing.T) {
 		t.Fatalf("SaveSnapshot: %v", err)
 	}
 
-	if err := c.Increment(10); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
-	if err := c.Increment(20); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(10)
+	c.Increment(20)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -158,9 +146,7 @@ func TestRepository_Load_NoSnapshotStore_FullReplay(t *testing.T) {
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
 	for range 3 {
-		if err := c.Increment(7); err != nil {
-			t.Fatalf("Increment: %v", err)
-		}
+		c.Increment(7)
 	}
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -185,9 +171,7 @@ func TestRepository_Load_SnapshotOnly_NoNewerEvents(t *testing.T) {
 		es.WithSnapshotStore(snaps))
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(42); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(42)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -219,9 +203,7 @@ func TestRepository_Load_SnapshotCodecMissing_Errors(t *testing.T) {
 	full := es.NewRepository(events, testdomain.NewRegistry(), testdomain.NewCounter,
 		es.WithSnapshotStore(snaps))
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(3); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(3)
 	if err := full.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -251,9 +233,7 @@ func TestRepository_Save_PolicyFires_SnapshotTaken(t *testing.T) {
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
 	for range 5 {
-		if err := c.Increment(1); err != nil {
-			t.Fatalf("Increment: %v", err)
-		}
+		c.Increment(1)
 	}
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -280,9 +260,7 @@ func TestRepository_Save_PolicyDoesNotFire_NoSnapshot(t *testing.T) {
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
 	for range 5 {
-		if err := c.Increment(1); err != nil {
-			t.Fatalf("Increment: %v", err)
-		}
+		c.Increment(1)
 	}
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -305,9 +283,7 @@ func TestRepository_Save_NoPolicy_NoSnapshot(t *testing.T) {
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
 	for range 1000 {
-		if err := c.Increment(1); err != nil {
-			t.Fatalf("Increment: %v", err)
-		}
+		c.Increment(1)
 	}
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -333,7 +309,7 @@ func TestRepository_Save_PolicyAcrossMultipleSaves(t *testing.T) {
 
 	// First Save reaches v=3 — should snapshot at 3.
 	for range 3 {
-		_ = c.Increment(1)
+		c.Increment(1)
 	}
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save 1: %v", err)
@@ -344,7 +320,7 @@ func TestRepository_Save_PolicyAcrossMultipleSaves(t *testing.T) {
 	}
 
 	// Second Save reaches v=4 — no crossing, no new snapshot.
-	_ = c.Increment(1)
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save 2: %v", err)
 	}
@@ -354,8 +330,8 @@ func TestRepository_Save_PolicyAcrossMultipleSaves(t *testing.T) {
 	}
 
 	// Third Save reaches v=6 — crosses 3 -> 6, snapshot at 6.
-	_ = c.Increment(1)
-	_ = c.Increment(1)
+	c.Increment(1)
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save 3: %v", err)
 	}

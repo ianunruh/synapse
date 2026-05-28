@@ -31,9 +31,7 @@ func TestRepository_Save_SnapshotFailure_LogsWarning(t *testing.T) {
 		es.WithLogger(logger))
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(1); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v (events should have committed despite snapshot failure)", err)
 	}
@@ -69,9 +67,7 @@ func TestRepository_Save_SnapshotSuccess_DoesNotLog(t *testing.T) {
 		es.WithLogger(logger))
 
 	c := testdomain.NewCounter(testdomain.CounterStream)
-	if err := c.Increment(1); err != nil {
-		t.Fatalf("Increment: %v", err)
-	}
+	c.Increment(1)
 	if err := repo.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

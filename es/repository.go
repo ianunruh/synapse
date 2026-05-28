@@ -202,9 +202,7 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 			Payload:        payload,
 		}
 
-		if err := agg.Apply(env); err != nil {
-			return zero, fmt.Errorf("synapse: apply %s at v%d: %w", raw.Type, raw.Version, err)
-		}
+		agg.Apply(env)
 		agg.SetVersion(env.Version)
 		seenEvents++
 	}

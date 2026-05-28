@@ -45,24 +45,23 @@ type CounterIncremented struct {
 type CounterReset struct{}
 
 // Apply implements [es.Aggregate].
-func (c *Counter) Apply(env es.Envelope) error {
+func (c *Counter) Apply(env es.Envelope) {
 	switch p := env.Payload.(type) {
 	case CounterIncremented:
 		c.Count += p.By
 	case CounterReset:
 		c.Count = 0
 	}
-	return nil
 }
 
 // Increment stages a [CounterIncremented] event.
-func (c *Counter) Increment(by int) error {
-	return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+func (c *Counter) Increment(by int) {
+	c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
 }
 
 // Reset stages a [CounterReset] event.
-func (c *Counter) Reset() error {
-	return c.Record("counter.reset", CounterReset{}, c.Apply)
+func (c *Counter) Reset() {
+	c.Record("counter.reset", CounterReset{}, c.Apply)
 }
 
 // CounterSnapshot is the serialized state of a [Counter] at a point
@@ -96,7 +95,8 @@ type IncrementCmd struct{ By int }
 
 // IncrementHandler is the [es.Handler] for [IncrementCmd].
 func IncrementHandler(_ context.Context, cmd IncrementCmd, c *Counter) error {
-	return c.Increment(cmd.By)
+	c.Increment(cmd.By)
+	return nil
 }
 
 // NewRegistry constructs an [es.Registry] populated with JSON codecs

@@ -58,25 +58,25 @@ type CounterSnapshot struct {
 	Value int    `json:"value"`
 }
 
-func (c *Counter) Apply(env es.Envelope) error {
+func (c *Counter) Apply(env es.Envelope) {
 	switch p := env.Payload.(type) {
 	case CounterCreated:
 		c.Name = p.Name
 	case CounterIncremented:
 		c.Value += p.By
 	}
-	return nil
 }
 
 func (c *Counter) Create(name string) error {
 	if c.Version() != 0 {
 		return fmt.Errorf("counter %q already created", c.StreamID())
 	}
-	return c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
+	c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
+	return nil
 }
 
-func (c *Counter) Increment(by int) error {
-	return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+func (c *Counter) Increment(by int) {
+	c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
 }
 
 // es.Snapshotter
@@ -102,7 +102,8 @@ func (c *Counter) Restore(state any) error {
 type IncrementCmd struct{ By int }
 
 func IncrementHandler(_ context.Context, cmd IncrementCmd, c *Counter) error {
-	return c.Increment(cmd.By)
+	c.Increment(cmd.By)
+	return nil
 }
 
 // --- Projection ------------------------------------------------------

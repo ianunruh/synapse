@@ -183,9 +183,7 @@ func TestExecute_RetryRecoversFromConflict(t *testing.T) {
 		})))
 
 	seed := testdomain.NewCounter(testdomain.CounterStream)
-	if err := seed.Increment(0); err != nil {
-		t.Fatalf("seed Increment: %v", err)
-	}
+	seed.Increment(0)
 	if err := repo.Save(ctx, seed); err != nil {
 		t.Fatalf("seed Save: %v", err)
 	}
@@ -195,14 +193,13 @@ func TestExecute_RetryRecoversFromConflict(t *testing.T) {
 		if attempts.Add(1) == 1 {
 			rival := testdomain.NewCounter(testdomain.CounterStream)
 			rival.SetVersion(c.Version())
-			if err := rival.Increment(7); err != nil {
-				return err
-			}
+			rival.Increment(7)
 			if err := repo.Save(ctx, rival); err != nil {
 				return err
 			}
 		}
-		return c.Increment(1)
+		c.Increment(1)
+		return nil
 	}
 
 	if err := es.Execute(ctx, repo, testdomain.CounterStream,

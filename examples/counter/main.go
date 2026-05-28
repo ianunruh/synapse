@@ -61,7 +61,7 @@ type CounterSnapshot struct {
 // Apply mutates in-memory state in response to a single event. It is
 // invoked during rehydration AND immediately after a new event is
 // recorded — implementations must be deterministic.
-func (c *Counter) Apply(env es.Envelope) error {
+func (c *Counter) Apply(env es.Envelope) {
 	switch p := env.Payload.(type) {
 	case CounterCreated:
 		c.Name = p.Name
@@ -70,7 +70,6 @@ func (c *Counter) Apply(env es.Envelope) error {
 	case CounterReset:
 		c.Value = 0
 	}
-	return nil
 }
 
 // Create stages a CounterCreated event. A counter may be created at
@@ -79,17 +78,18 @@ func (c *Counter) Create(name string) error {
 	if c.Version() != 0 {
 		return fmt.Errorf("counter %q already created", c.StreamID())
 	}
-	return c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
+	c.Record("counter.created", CounterCreated{Name: name}, c.Apply)
+	return nil
 }
 
 // Increment stages a CounterIncremented event.
-func (c *Counter) Increment(by int) error {
-	return c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
+func (c *Counter) Increment(by int) {
+	c.Record("counter.incremented", CounterIncremented{By: by}, c.Apply)
 }
 
 // Reset stages a CounterReset event.
-func (c *Counter) Reset() error {
-	return c.Record("counter.reset", CounterReset{}, c.Apply)
+func (c *Counter) Reset() {
+	c.Record("counter.reset", CounterReset{}, c.Apply)
 }
 
 // SnapshotType implements es.Snapshotter.
@@ -116,7 +116,8 @@ func (c *Counter) Restore(state any) error {
 type IncrementCmd struct{ By int }
 
 func IncrementHandler(_ context.Context, cmd IncrementCmd, c *Counter) error {
-	return c.Increment(cmd.By)
+	c.Increment(cmd.By)
+	return nil
 }
 
 // --- Main -----------------------------------------------------------
@@ -201,8 +202,8 @@ func main() {
 	fmt.Println("== concurrent modification")
 	a, _ := repo.Load(ctx, stream)
 	b, _ := repo.Load(ctx, stream)
-	_ = a.Increment(10)
-	_ = b.Increment(20)
+	a.Increment(10)
+	b.Increment(20)
 	if err := repo.Save(ctx, a); err != nil {
 		log.Fatalf("Save a: %v", err)
 	}
