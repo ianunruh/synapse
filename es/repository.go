@@ -3,31 +3,35 @@ package es
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/ianunruh/synapse/idgen"
 )
 
-// Repository binds an [EventStore], a codec [Registry], a [Clock], and
-// an [idgen.Generator] together so application code can load and save
-// aggregates of type A without thinking about serialization, ID
-// generation, or optimistic concurrency.
+// Repository binds an [EventStore], a codec [Registry], a [Clock], an
+// [idgen.Generator], and an optional chain of [Middleware] together
+// so application code can load and save aggregates of type A without
+// thinking about serialization, ID generation, or optimistic
+// concurrency.
 //
 // A Repository is safe for concurrent use as long as its dependencies
 // are. The newFn factory is invoked to construct an empty aggregate
 // before rehydration.
 type Repository[A Aggregate] struct {
-	store EventStore
-	reg   *Registry
-	clock Clock
-	idGen idgen.Generator
-	newFn func(StreamID) A
+	store      EventStore
+	reg        *Registry
+	clock      Clock
+	idGen      idgen.Generator
+	newFn      func(StreamID) A
+	middleware []Middleware
 }
 
 // repositoryOptions collects the configurable knobs threaded through
 // [RepositoryOption] values.
 type repositoryOptions struct {
-	clock Clock
-	idGen idgen.Generator
+	clock      Clock
+	idGen      idgen.Generator
+	middleware []Middleware
 }
 
 // RepositoryOption configures a [Repository] at construction time.
@@ -44,6 +48,19 @@ func WithClock(c Clock) RepositoryOption {
 // Repository's [Clock].
 func WithIDGenerator(g idgen.Generator) RepositoryOption {
 	return func(o *repositoryOptions) { o.idGen = g }
+}
+
+// WithMiddleware appends [Middleware] to the Repository's command
+// execution chain. Subsequent calls append rather than replace, so
+// constructors that compose multiple option groups behave naturally.
+//
+// Middleware run left-to-right as outer wrappers: the first middleware
+// passed wraps the second, which wraps the third, and so on around the
+// load-handle-save pipeline that [Execute] invokes.
+func WithMiddleware(mws ...Middleware) RepositoryOption {
+	return func(o *repositoryOptions) {
+		o.middleware = append(o.middleware, mws...)
+	}
 }
 
 // NewRepository constructs a [Repository] over the given store and
@@ -63,11 +80,12 @@ func NewRepository[A Aggregate](
 		o.idGen = idgen.UUIDv7{Now: o.clock.NowUTC}
 	}
 	return &Repository[A]{
-		store: store,
-		reg:   reg,
-		clock: o.clock,
-		idGen: o.idGen,
-		newFn: newFn,
+		store:      store,
+		reg:        reg,
+		clock:      o.clock,
+		idGen:      o.idGen,
+		newFn:      newFn,
+		middleware: slices.Clone(o.middleware),
 	}
 }
 
