@@ -56,8 +56,37 @@ import (
 	_ "modernc.org/sqlite" // register the "sqlite" driver
 )
 
+// Schema is the SQL DDL this Store requires. It is exported so users
+// who manage migrations externally (goose, golang-migrate, atlas, etc.)
+// can feed it to their own tooling. [New] applies it by default;
+// [WithoutMigrate] disables that. [Migrate] applies it explicitly.
+//
 //go:embed schema.sql
-var schemaSQL string
+var Schema string
+
+// Migrate applies [Schema] to db. It is idempotent (CREATE TABLE IF
+// NOT EXISTS), so repeated calls are safe.
+func Migrate(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, Schema); err != nil {
+		return fmt.Errorf("synapse/sqlite: migrate: %w", err)
+	}
+	return nil
+}
+
+// Option configures [New].
+type Option func(*options)
+
+type options struct {
+	skipMigrate bool
+}
+
+// WithoutMigrate disables the automatic schema migration that [New]
+// performs by default. Use this when the schema is managed by an
+// external tool (goose, golang-migrate, atlas, etc.) or by an
+// explicit call to [Migrate].
+func WithoutMigrate() Option {
+	return func(o *options) { o.skipMigrate = true }
+}
 
 // Store is a SQLite-backed [es.SubscribableEventStore].
 //
@@ -70,11 +99,18 @@ type Store struct {
 	notify   chan struct{}
 }
 
-// New applies the events schema (idempotent) and returns a Store
-// wrapping db.
-func New(ctx context.Context, db *sql.DB) (*Store, error) {
-	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
-		return nil, fmt.Errorf("synapse/sqlite: init schema: %w", err)
+// New returns a Store wrapping db. By default New applies [Schema]
+// (idempotent); pass [WithoutMigrate] to skip that step when the
+// schema is managed externally.
+func New(ctx context.Context, db *sql.DB, opts ...Option) (*Store, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if !o.skipMigrate {
+		if err := Migrate(ctx, db); err != nil {
+			return nil, err
+		}
 	}
 	return &Store{
 		db:     db,

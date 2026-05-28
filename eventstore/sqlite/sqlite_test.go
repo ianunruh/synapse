@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ianunruh/synapse/es"
@@ -49,6 +50,65 @@ func TestSQLiteStore_Contract(t *testing.T) {
 }
 
 // ----- SQLite-specific tests ------------------------------------------
+
+// ----- Schema management ----------------------------------------------
+
+func TestSchema_NonEmpty(t *testing.T) {
+	if !strings.Contains(sqlitestore.Schema, "CREATE TABLE") {
+		t.Errorf("Schema does not look like DDL: %q", sqlitestore.Schema)
+	}
+}
+
+func TestNew_WithoutMigrate(t *testing.T) {
+	// With WithoutMigrate, New does NOT create the events table;
+	// the caller is responsible for running Migrate or applying the
+	// schema via some other tool first.
+	ctx := t.Context()
+	dsn := "file:" + filepath.Join(t.TempDir(), "noschema.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	store, err := sqlitestore.New(ctx, db, sqlitestore.WithoutMigrate())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Operations should fail because the events table does not exist.
+	_, err = store.Append(ctx, "x", es.NoStream, eventstoretest.MakeEvent("x", 1))
+	if err == nil {
+		t.Errorf("Append on unmigrated DB: expected error, got nil")
+	}
+
+	// After explicit Migrate, the same store works.
+	if err := sqlitestore.Migrate(ctx, db); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if _, err := store.Append(ctx, "x", es.NoStream, eventstoretest.MakeEvent("x", 1)); err != nil {
+		t.Errorf("Append after Migrate: %v", err)
+	}
+}
+
+func TestMigrate_Idempotent(t *testing.T) {
+	ctx := t.Context()
+	dsn := "file:" + filepath.Join(t.TempDir(), "idem.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	for range 3 {
+		if err := sqlitestore.Migrate(ctx, db); err != nil {
+			t.Errorf("Migrate: %v", err)
+		}
+	}
+}
 
 func TestPersistence_AcrossStoreInstances(t *testing.T) {
 	ctx := context.Background()
