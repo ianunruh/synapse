@@ -3,10 +3,12 @@ package es
 import (
 	"context"
 	"fmt"
+
+	"github.com/ianunruh/synapse/idgen"
 )
 
 // Repository binds an [EventStore], a codec [Registry], a [Clock], and
-// an [IDGenerator] together so application code can load and save
+// an [idgen.Generator] together so application code can load and save
 // aggregates of type A without thinking about serialization, ID
 // generation, or optimistic concurrency.
 //
@@ -17,7 +19,7 @@ type Repository[A Aggregate] struct {
 	store EventStore
 	reg   *Registry
 	clock Clock
-	idgen IDGenerator
+	idGen idgen.Generator
 	newFn func(StreamID) A
 }
 
@@ -25,7 +27,7 @@ type Repository[A Aggregate] struct {
 // [RepositoryOption] values.
 type repositoryOptions struct {
 	clock Clock
-	idgen IDGenerator
+	idGen idgen.Generator
 }
 
 // RepositoryOption configures a [Repository] at construction time.
@@ -37,11 +39,11 @@ func WithClock(c Clock) RepositoryOption {
 	return func(o *repositoryOptions) { o.clock = c }
 }
 
-// WithIDGenerator overrides the [IDGenerator] used to stamp EventID on
-// saved events. The default is a UUIDv7 generator backed by the
+// WithIDGenerator overrides the [idgen.Generator] used to stamp
+// EventID on saved events. The default is [idgen.UUIDv7] backed by the
 // Repository's [Clock].
-func WithIDGenerator(g IDGenerator) RepositoryOption {
-	return func(o *repositoryOptions) { o.idgen = g }
+func WithIDGenerator(g idgen.Generator) RepositoryOption {
+	return func(o *repositoryOptions) { o.idGen = g }
 }
 
 // NewRepository constructs a [Repository] over the given store and
@@ -57,14 +59,14 @@ func NewRepository[A Aggregate](
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if o.idgen == nil {
-		o.idgen = uuidv7Generator{clock: o.clock}
+	if o.idGen == nil {
+		o.idGen = idgen.UUIDv7{Now: o.clock.NowUTC}
 	}
 	return &Repository[A]{
 		store: store,
 		reg:   reg,
 		clock: o.clock,
-		idgen: o.idgen,
+		idGen: o.idGen,
 		newFn: newFn,
 	}
 }
@@ -153,7 +155,7 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 
 		eventID := env.EventID
 		if eventID == "" {
-			eventID = r.idgen.NewEventID()
+			eventID = r.idGen.NewEventID()
 		}
 		recordedAt := env.RecordedAt
 		if recordedAt.IsZero() {
