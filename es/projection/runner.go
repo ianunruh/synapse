@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"log/slog"
 
 	"github.com/ianunruh/synapse/es"
 )
@@ -69,8 +70,12 @@ type Runner struct {
 	// false makes [Run] return the error.
 	//
 	// When OnError is nil, Run returns on the first projection
-	// error.
+	// error. Skipped events are logged at Warn level via Logger.
 	OnError func(env es.Envelope, err error) bool
+
+	// Logger records best-effort warnings — currently, events
+	// skipped via OnError. Nil falls back to [slog.Default].
+	Logger *slog.Logger
 }
 
 // Run starts the subscription, loads the saved checkpoint (or 0),
@@ -91,6 +96,10 @@ type Runner struct {
 func (r *Runner) Run(ctx context.Context) error {
 	if err := r.validate(); err != nil {
 		return err
+	}
+	logger := r.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	from := uint64(0)
@@ -129,6 +138,13 @@ func (r *Runner) Run(ctx context.Context) error {
 			if r.OnError == nil || !r.OnError(env, err) {
 				return err
 			}
+			logger.WarnContext(ctx, "synapse: projection error, skipping event",
+				"name", r.Name,
+				"type", env.Type,
+				"stream", env.StreamID,
+				"position", env.GlobalPosition,
+				"err", err,
+			)
 		}
 
 		if r.Checkpoint != nil {

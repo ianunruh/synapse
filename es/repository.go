@@ -3,17 +3,18 @@ package es
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/ianunruh/synapse/idgen"
 )
 
 // Repository binds an [EventStore], a codec [Registry], a [Clock], an
-// [idgen.Generator], an optional [SnapshotStore]/[SnapshotPolicy], and
-// an optional chain of [Middleware] together so application code can
-// load and save aggregates of type A without thinking about
-// serialization, ID generation, snapshotting, or optimistic
-// concurrency.
+// [idgen.Generator], an optional [SnapshotStore]/[SnapshotPolicy], an
+// optional chain of [Middleware], and an [slog.Logger] together so
+// application code can load and save aggregates of type A without
+// thinking about serialization, ID generation, snapshotting, or
+// optimistic concurrency.
 //
 // A Repository is safe for concurrent use as long as its dependencies
 // are. The newFn factory is invoked to construct an empty aggregate
@@ -27,6 +28,7 @@ type Repository[A Aggregate] struct {
 	middleware []Middleware
 	snapStore  SnapshotStore
 	snapPolicy SnapshotPolicy
+	logger     *slog.Logger
 }
 
 // repositoryOptions collects the configurable knobs threaded through
@@ -37,6 +39,7 @@ type repositoryOptions struct {
 	middleware []Middleware
 	snapStore  SnapshotStore
 	snapPolicy SnapshotPolicy
+	logger     *slog.Logger
 }
 
 // RepositoryOption configures a [Repository] at construction time.
@@ -85,6 +88,16 @@ func WithSnapshotPolicy(p SnapshotPolicy) RepositoryOption {
 	return func(o *repositoryOptions) { o.snapPolicy = p }
 }
 
+// WithLogger overrides the [slog.Logger] used by the Repository to
+// record best-effort failures — currently, automatic snapshot save
+// errors that [Save] intentionally swallows. The default is
+// [slog.Default], so library warnings reach the program's default
+// handler without explicit configuration. To silence, install a
+// logger backed by a discard handler.
+func WithLogger(l *slog.Logger) RepositoryOption {
+	return func(o *repositoryOptions) { o.logger = l }
+}
+
 // NewRepository constructs a [Repository] over the given store and
 // codec registry. newFn returns a zero-value aggregate bound to the
 // requested stream id; it is invoked by Load before replaying history.
@@ -101,6 +114,9 @@ func NewRepository[A Aggregate](
 	if o.idGen == nil {
 		o.idGen = idgen.UUIDv7{Now: o.clock.NowUTC}
 	}
+	if o.logger == nil {
+		o.logger = slog.Default()
+	}
 	return &Repository[A]{
 		store:      store,
 		reg:        reg,
@@ -110,6 +126,7 @@ func NewRepository[A Aggregate](
 		middleware: slices.Clone(o.middleware),
 		snapStore:  o.snapStore,
 		snapPolicy: o.snapPolicy,
+		logger:     o.logger,
 	}
 }
 
@@ -172,16 +189,17 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 		}
 
 		env := Envelope{
-			EventID:     raw.EventID,
-			StreamID:    raw.StreamID,
-			Version:     raw.Version,
-			RecordedAt:  raw.RecordedAt,
-			Type:        raw.Type,
-			ContentType: raw.ContentType,
-			Causation:   raw.Causation,
-			Correlation: raw.Correlation,
-			Metadata:    raw.Metadata,
-			Payload:     payload,
+			EventID:        raw.EventID,
+			StreamID:       raw.StreamID,
+			Version:        raw.Version,
+			GlobalPosition: raw.GlobalPosition,
+			RecordedAt:     raw.RecordedAt,
+			Type:           raw.Type,
+			ContentType:    raw.ContentType,
+			Causation:      raw.Causation,
+			Correlation:    raw.Correlation,
+			Metadata:       raw.Metadata,
+			Payload:        payload,
 		}
 
 		if err := agg.Apply(env); err != nil {
@@ -206,8 +224,9 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 // are both configured and the aggregate implements [Snapshotter], the
 // policy is consulted with the version before and after the Save. If
 // it returns true, a best-effort snapshot save is attempted; errors
-// from that step are intentionally swallowed (events are already
-// committed; the snapshot is an optimization).
+// from that step are logged at Warn level via the Repository's
+// [slog.Logger] and otherwise swallowed (events are already committed;
+// the snapshot is an optimization).
 //
 // Returns nil immediately if there are no pending events.
 func (r *Repository[A]) Save(ctx context.Context, agg A) error {
@@ -265,8 +284,13 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 	agg.ClearPending()
 
 	if r.snapStore != nil && r.snapPolicy != nil && r.snapPolicy(agg, versionBefore, versionAfter) {
-		// TODO: surface this error via slog once we add logging.
-		_ = r.trySaveSnapshot(ctx, agg)
+		if err := r.trySaveSnapshot(ctx, agg); err != nil {
+			r.logger.WarnContext(ctx, "synapse: snapshot save failed",
+				"stream", agg.StreamID(),
+				"version", agg.Version(),
+				"err", err,
+			)
+		}
 	}
 	return nil
 }
