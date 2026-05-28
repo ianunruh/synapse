@@ -4,4 +4,5 @@ use (
 	.
 	./eventstore/sqlite
 	./snapshotstore/sqlite
+	./checkpointstore/sqlite
 )
