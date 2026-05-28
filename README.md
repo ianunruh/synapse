@@ -1,5 +1,7 @@
 # synapse
 
+[![CI](https://github.com/ianunruh/synapse/actions/workflows/ci.yml/badge.svg)](https://github.com/ianunruh/synapse/actions/workflows/ci.yml)
+
 A small Go event sourcing and CQRS toolkit. Composable primitives — aggregates, events, repositories, projections — with zero third-party deps in the core and pluggable backends for events, snapshots, and projection checkpoints.
 
 ## Status
