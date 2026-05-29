@@ -2,8 +2,12 @@ go 1.26
 
 use (
 	.
+	./checkpointstore/postgres
 	./checkpointstore/sqlite
+	./eventstore/postgres
 	./eventstore/sqlite
 	./examples/persistent
+	./pgtest
+	./snapshotstore/postgres
 	./snapshotstore/sqlite
 )

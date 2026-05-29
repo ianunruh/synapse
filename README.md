@@ -93,12 +93,15 @@ The repo is a Go workspace. Core interfaces live in `es`; backends and contract 
 | `codec/json` | root | JSON event/snapshot codec |
 | `idgen` | root | UUIDv7 identifier generator |
 | `eventstore/memory` | root | In-memory event store |
+| `eventstore/postgres` | sibling | Postgres event store (pgxpool, LISTEN/NOTIFY) |
 | `eventstore/sqlite` | sibling | SQLite event store |
 | `eventstore/eventstoretest` | root | Backend contract test suite |
 | `snapshotstore/memory` | root | In-memory snapshot store |
+| `snapshotstore/postgres` | sibling | Postgres snapshot store |
 | `snapshotstore/sqlite` | sibling | SQLite snapshot store |
 | `snapshotstore/snapshotstoretest` | root | Backend contract test suite |
 | `checkpointstore/memory` | root | In-memory checkpoint store |
+| `checkpointstore/postgres` | sibling | Postgres checkpoint store |
 | `checkpointstore/sqlite` | sibling | SQLite checkpoint store |
 | `checkpointstore/checkpointstoretest` | root | Backend contract test suite |
 | `examples/counter` | root | In-memory event sourcing walkthrough |

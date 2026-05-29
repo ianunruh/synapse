@@ -19,9 +19,12 @@ jobs:
           set -e
           modules=(
             .
+            checkpointstore/postgres
             checkpointstore/sqlite
+            eventstore/postgres
             eventstore/sqlite
             examples/persistent
+            snapshotstore/postgres
             snapshotstore/sqlite
           )
           for mod in "${modules[@]}"; do
