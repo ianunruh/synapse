@@ -97,6 +97,15 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// querier is the subset of *pgxpool.Pool and *pgxpool.Conn that
+// readSince needs. Catch-up reads in the live subscribe loop run on
+// the connection already held for LISTEN, so a live subscriber holds
+// exactly one connection rather than acquiring a second from the pool
+// per read (see the Concurrency model note above).
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // New returns a Store wrapping pool. By default applies [Schema];
 // pass [WithoutMigrate] to skip when migrations are external.
 func New(ctx context.Context, pool *pgxpool.Pool, opts ...Option) (*Store, error) {
@@ -290,7 +299,7 @@ func (s *Store) subscribeLoop(
 	from := opts.From
 
 	if !opts.Live {
-		_, _, err := s.readSince(ctx, filterStream, from, yield)
+		_, _, err := s.readSince(ctx, s.pool, filterStream, from, yield)
 		if err != nil {
 			yield(es.RawEnvelope{}, err)
 		}
@@ -316,7 +325,7 @@ func (s *Store) subscribeLoop(
 			return
 		}
 
-		next, stopped, err := s.readSince(ctx, filterStream, from, yield)
+		next, stopped, err := s.readSince(ctx, conn, filterStream, from, yield)
 		if stopped {
 			return
 		}
@@ -358,6 +367,7 @@ func (s *Store) subscribeLoop(
 // cursor, whether the consumer broke out, and the first error.
 func (s *Store) readSince(
 	ctx context.Context,
+	q querier,
 	filterStream es.StreamID,
 	cursor uint64,
 	yield func(es.RawEnvelope, error) bool,
@@ -378,7 +388,7 @@ func (s *Store) readSince(
 		args = []any{string(filterStream), int64(cursor)}
 	}
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return cursor, false, fmt.Errorf("synapse/postgres: subscribe query: %w", err)
 	}

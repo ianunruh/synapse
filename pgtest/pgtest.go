@@ -73,7 +73,16 @@ func Pool(tb testing.TB) *pgxpool.Pool {
 		tb.Fatalf("pgtest: CREATE DATABASE: %v", err)
 	}
 
-	pool, err := pgxpool.New(ctx, withDatabase(baseDSN, dbName))
+	cfg, err := pgxpool.ParseConfig(withDatabase(baseDSN, dbName))
+	if err != nil {
+		tb.Fatalf("pgtest: parse config: %v", err)
+	}
+	// The subscribable contract runs many concurrent live subscribers,
+	// each holding a connection for its LISTEN. pgxpool's default
+	// (max(4, NumCPU)) is too small for that and deadlocks the pool, so
+	// give tests generous headroom.
+	cfg.MaxConns = 32
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		tb.Fatalf("pgtest: test pool: %v", err)
 	}
