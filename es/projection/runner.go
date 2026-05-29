@@ -43,6 +43,8 @@ type Runner struct {
 	checkpoint        es.CheckpointStore
 	live              bool
 	stream            es.StreamID
+	types             []string
+	checkpointEvery   int
 	onError           func(env es.Envelope, err error) bool
 	logger            *slog.Logger
 	disableEnrichment bool
@@ -54,6 +56,8 @@ type runnerOptions struct {
 	checkpoint        es.CheckpointStore
 	live              bool
 	stream            es.StreamID
+	types             []string
+	checkpointEvery   int
 	onError           func(env es.Envelope, err error) bool
 	logger            *slog.Logger
 	disableEnrichment bool
@@ -82,6 +86,29 @@ func WithLive(live bool) RunnerOption {
 // global position.
 func WithStream(stream es.StreamID) RunnerOption {
 	return func(o *runnerOptions) { o.stream = stream }
+}
+
+// WithTypes restricts the subscription to events whose type is one of
+// the given names, via [es.SubscriptionOptions.Types]. Without it the
+// Runner sees every event type — and returns [es.CodecNotFoundError] for
+// any type with no registered codec. Use this to scope a projection to
+// the event types it actually understands.
+func WithTypes(types ...string) RunnerOption {
+	return func(o *runnerOptions) { o.types = types }
+}
+
+// WithCheckpointEvery batches checkpoint saves: the Runner saves
+// progress once every n processed events rather than after each one.
+// n <= 1 (the default) saves after every event. The final position is
+// always flushed when a non-live subscription drains cleanly.
+//
+// Batching trades durability granularity for fewer checkpoint writes: on
+// an unclean stop (context cancellation, crash) up to n-1 already-
+// processed events may be redelivered on the next run. Projections are
+// already required to be idempotent, so redelivery is safe. Has no
+// effect without [WithCheckpoint].
+func WithCheckpointEvery(n int) RunnerOption {
+	return func(o *runnerOptions) { o.checkpointEvery = n }
 }
 
 // WithOnError installs an error handler invoked when
@@ -128,9 +155,12 @@ func NewRunner(
 	proj es.Projection,
 	opts ...RunnerOption,
 ) *Runner {
-	o := runnerOptions{logger: slog.Default()}
+	o := runnerOptions{logger: slog.Default(), checkpointEvery: 1}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.checkpointEvery < 1 {
+		o.checkpointEvery = 1
 	}
 	return &Runner{
 		name:              name,
@@ -140,6 +170,8 @@ func NewRunner(
 		checkpoint:        o.checkpoint,
 		live:              o.live,
 		stream:            o.stream,
+		types:             o.types,
+		checkpointEvery:   o.checkpointEvery,
 		onError:           o.onError,
 		logger:            o.logger,
 		disableEnrichment: o.disableEnrichment,
@@ -173,7 +205,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	opts := es.SubscriptionOptions{From: from, Live: r.live}
+	opts := es.SubscriptionOptions{From: from, Live: r.live, Types: r.types}
 	var seq iter.Seq2[es.RawEnvelope, error]
 	if r.stream != "" {
 		seq = r.store.SubscribeStream(ctx, r.stream, opts)
@@ -181,6 +213,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		seq = r.store.Subscribe(ctx, opts)
 	}
 
+	var (
+		pendingPos  uint64
+		havePending bool
+		sinceSave   int
+	)
 	for raw, err := range seq {
 		if err != nil {
 			if ctx.Err() != nil {
@@ -222,10 +259,26 @@ func (r *Runner) Run(ctx context.Context) error {
 			if r.stream != "" {
 				pos = raw.Version
 			}
-			if err := r.checkpoint.Save(ctx, r.name, pos); err != nil {
-				return fmt.Errorf("synapse/projection: save checkpoint %q at pos %d: %w",
-					r.name, pos, err)
+			pendingPos, havePending = pos, true
+			sinceSave++
+			if sinceSave >= r.checkpointEvery {
+				if err := r.checkpoint.Save(ctx, r.name, pos); err != nil {
+					return fmt.Errorf("synapse/projection: save checkpoint %q at pos %d: %w",
+						r.name, pos, err)
+				}
+				sinceSave, havePending = 0, false
 			}
+		}
+	}
+
+	// Clean drain (non-live exhaustion): flush any position not yet
+	// saved by the batch. Early returns above — context cancel, iterator
+	// error, projection error — intentionally skip this; on an unclean
+	// stop up to checkpointEvery-1 events are redelivered next run.
+	if r.checkpoint != nil && havePending {
+		if err := r.checkpoint.Save(ctx, r.name, pendingPos); err != nil {
+			return fmt.Errorf("synapse/projection: save checkpoint %q at pos %d: %w",
+				r.name, pendingPos, err)
 		}
 	}
 	return nil

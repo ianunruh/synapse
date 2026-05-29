@@ -450,7 +450,7 @@ func (s *Store) subscribeLoop(
 			notify = s.currentNotify()
 		}
 
-		next, stopped, err := s.readSince(ctx, filterStream, from, yield)
+		next, stopped, err := s.readSince(ctx, filterStream, from, opts.Types, yield)
 		if stopped {
 			return
 		}
@@ -482,23 +482,31 @@ func (s *Store) readSince(
 	ctx context.Context,
 	filterStream es.StreamID,
 	cursor uint64,
+	types []string,
 	yield func(es.RawEnvelope, error) bool,
 ) (uint64, bool, error) {
 	var (
-		query string
+		where string
+		order string
 		args  []any
 	)
 	if filterStream == "" {
-		query = `SELECT global_position, event_id, stream_id, version, type, content_type,
-				recorded_at, causation, correlation, metadata, payload
-			 FROM events WHERE global_position > $1 ORDER BY global_position`
+		where = "global_position > $1"
+		order = "global_position"
 		args = []any{int64(cursor)}
 	} else {
-		query = `SELECT global_position, event_id, stream_id, version, type, content_type,
-				recorded_at, causation, correlation, metadata, payload
-			 FROM events WHERE stream_id = $1 AND version > $2 ORDER BY version`
+		where = "stream_id = $1 AND version > $2"
+		order = "version"
 		args = []any{string(filterStream), int64(cursor)}
 	}
+	if len(types) > 0 {
+		args = append(args, types)
+		where += fmt.Sprintf(" AND type = ANY($%d::text[])", len(args))
+	}
+
+	query := `SELECT global_position, event_id, stream_id, version, type, content_type,
+			recorded_at, causation, correlation, metadata, payload
+		 FROM events WHERE ` + where + " ORDER BY " + order
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

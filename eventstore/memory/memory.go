@@ -139,6 +139,7 @@ func (s *Store) Load(
 func (s *Store) Subscribe(ctx context.Context, opts es.SubscriptionOptions) iter.Seq2[es.RawEnvelope, error] {
 	return func(yield func(es.RawEnvelope, error) bool) {
 		from := opts.From
+		types := typeSet(opts.Types)
 		for {
 			if err := ctx.Err(); err != nil {
 				yield(es.RawEnvelope{}, err)
@@ -148,10 +149,13 @@ func (s *Store) Subscribe(ctx context.Context, opts es.SubscriptionOptions) iter
 			notify, snapshot := s.subscribeGlobalSnapshot(from)
 
 			for _, env := range snapshot {
+				from = env.GlobalPosition
+				if !types.matches(env.Type) {
+					continue
+				}
 				if !yield(env, nil) {
 					return
 				}
-				from = env.GlobalPosition
 			}
 
 			if !opts.Live {
@@ -174,6 +178,7 @@ func (s *Store) Subscribe(ctx context.Context, opts es.SubscriptionOptions) iter
 func (s *Store) SubscribeStream(ctx context.Context, stream es.StreamID, opts es.SubscriptionOptions) iter.Seq2[es.RawEnvelope, error] {
 	return func(yield func(es.RawEnvelope, error) bool) {
 		from := opts.From
+		types := typeSet(opts.Types)
 		for {
 			if err := ctx.Err(); err != nil {
 				yield(es.RawEnvelope{}, err)
@@ -183,10 +188,13 @@ func (s *Store) SubscribeStream(ctx context.Context, stream es.StreamID, opts es
 			notify, snapshot := s.subscribeStreamSnapshot(stream, from)
 
 			for _, env := range snapshot {
+				from = env.Version
+				if !types.matches(env.Type) {
+					continue
+				}
 				if !yield(env, nil) {
 					return
 				}
-				from = env.Version
 			}
 
 			if !opts.Live {
@@ -259,6 +267,32 @@ func (s *Store) subscribeStreamSnapshot(stream es.StreamID, from uint64) (chan s
 		copy(snapshot, events[from:])
 	}
 	return notify, snapshot
+}
+
+// typeFilter is a set of event types to deliver. A nil filter (no Types
+// in the subscription options) matches every type.
+type typeFilter map[string]struct{}
+
+// typeSet builds a [typeFilter] from a slice of type names, returning
+// nil for an empty slice so the no-filter fast path is a nil check.
+func typeSet(types []string) typeFilter {
+	if len(types) == 0 {
+		return nil
+	}
+	set := make(typeFilter, len(types))
+	for _, t := range types {
+		set[t] = struct{}{}
+	}
+	return set
+}
+
+// matches reports whether an event of type typ should be delivered.
+func (f typeFilter) matches(typ string) bool {
+	if f == nil {
+		return true
+	}
+	_, ok := f[typ]
+	return ok
 }
 
 // checkRevision returns *es.ConflictError when expected disagrees

@@ -21,6 +21,17 @@ type SubscriptionOptions struct {
 	// all existing events past From. When false, the iterator
 	// terminates cleanly once caught up.
 	Live bool
+
+	// Types, when non-empty, restricts delivery to events whose
+	// [RawEnvelope.Type] exactly matches one of the listed type names.
+	// An empty or nil slice delivers every type (the default).
+	//
+	// Filtering is a delivery concern only: it does not change position
+	// semantics. Yielded events keep their true GlobalPosition (or
+	// per-stream Version), so the delivered sequence may have gaps where
+	// filtered-out events fall. Resuming from a yielded event's position
+	// remains correct.
+	Types []string
 }
 
 // SubscribableEventStore is the optional capability an [EventStore]

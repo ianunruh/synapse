@@ -10,8 +10,10 @@ import (
 	"testing/synctest"
 
 	checkpointmem "github.com/ianunruh/synapse/checkpointstore/memory"
+	jsoncodec "github.com/ianunruh/synapse/codec/json"
 	"github.com/ianunruh/synapse/es"
 	"github.com/ianunruh/synapse/es/projection"
+	"github.com/ianunruh/synapse/eventstore/eventstoretest"
 	"github.com/ianunruh/synapse/eventstore/memory"
 	"github.com/ianunruh/synapse/internal/testdomain"
 )
@@ -377,6 +379,155 @@ func TestRunner_ContextCanceled_ReturnsCleanly(t *testing.T) {
 			}
 		default:
 			t.Errorf("Run did not exit on cancel")
+		}
+	})
+}
+
+// ----- Type filtering ----------------------------------------------------
+
+type filterPayload struct {
+	Version int `json:"version"`
+}
+
+func TestRunner_WithTypes_FiltersBeforeDecode(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+
+	if _, err := store.Append(ctx, "s", es.NoStream,
+		eventstoretest.MakeTypedEvent("s", 1, "kept"),
+		eventstoretest.MakeTypedEvent("s", 2, "dropped"),
+		eventstoretest.MakeTypedEvent("s", 3, "kept"),
+	); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// A codec is registered only for "kept"; without WithTypes the
+	// Runner would hit ErrCodecNotFound on the "dropped" event.
+	reg := es.NewRegistry()
+	es.Register(reg, "kept", jsoncodec.For[filterPayload]())
+
+	proj := &recordingProjection{}
+	r := projection.NewRunner("typed", store, reg, proj, projection.WithTypes("kept"))
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rec := proj.Recorded()
+	if len(rec) != 2 {
+		t.Fatalf("recorded %d events, want 2 (only kept)", len(rec))
+	}
+	for _, e := range rec {
+		if e.Type != "kept" {
+			t.Errorf("recorded type %q, want kept", e.Type)
+		}
+	}
+}
+
+// ----- Checkpoint batching -----------------------------------------------
+
+// recordingCheckpoint records every Save position so tests can assert
+// the batching cadence, not just the final value.
+type recordingCheckpoint struct {
+	mu    sync.Mutex
+	saved []uint64
+	last  map[string]uint64
+}
+
+func newRecordingCheckpoint() *recordingCheckpoint {
+	return &recordingCheckpoint{last: map[string]uint64{}}
+}
+
+func (c *recordingCheckpoint) Save(_ context.Context, name string, pos uint64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.saved = append(c.saved, pos)
+	c.last[name] = pos
+	return nil
+}
+
+func (c *recordingCheckpoint) Load(_ context.Context, name string) (uint64, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p, ok := c.last[name]
+	return p, ok, nil
+}
+
+func (c *recordingCheckpoint) Reset(_ context.Context, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.last, name)
+	return nil
+}
+
+func (c *recordingCheckpoint) Saves() []uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.saved)
+}
+
+func TestRunner_CheckpointEvery_BatchesAndFlushes(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	reg := testdomain.NewRegistry()
+	seedCounters(t, store, reg, 1, 5) // positions 1..5
+
+	cps := newRecordingCheckpoint()
+	proj := &recordingProjection{}
+	r := projection.NewRunner("batch", store, reg, proj,
+		projection.WithCheckpoint(cps),
+		projection.WithCheckpointEvery(2),
+	)
+	if err := r.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := len(proj.Recorded()); got != 5 {
+		t.Fatalf("recorded %d, want 5", got)
+	}
+
+	// Saves at positions 2 and 4 (every 2), plus a final flush of 5 on
+	// clean drain.
+	want := []uint64{2, 4, 5}
+	if got := cps.Saves(); !slices.Equal(got, want) {
+		t.Errorf("checkpoint saves = %v, want %v", got, want)
+	}
+}
+
+func TestRunner_CheckpointEvery_NoFlushOnCancel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+
+		store := memory.New()
+		reg := testdomain.NewRegistry()
+		cps := checkpointmem.New()
+		seedCounters(t, store, reg, 1, 2) // 2 events, batch never reached
+
+		proj := &recordingProjection{}
+		r := projection.NewRunner("batch-cancel", store, reg, proj,
+			projection.WithCheckpoint(cps),
+			projection.WithLive(true),
+			projection.WithCheckpointEvery(5),
+		)
+
+		done := make(chan error, 1)
+		go func() { done <- r.Run(ctx) }()
+
+		synctest.Wait()
+		if got := len(proj.Recorded()); got != 2 {
+			t.Fatalf("recorded %d, want 2", got)
+		}
+		if _, found, _ := cps.Load(context.Background(), "batch-cancel"); found {
+			t.Errorf("checkpoint saved before batch threshold; want none")
+		}
+
+		cancel()
+		synctest.Wait()
+		if err := <-done; err != nil {
+			t.Errorf("Run after cancel: %v", err)
+		}
+		// No flush on cancel: up to checkpointEvery-1 events are
+		// redelivered on the next run instead.
+		if _, found, _ := cps.Load(context.Background(), "batch-cancel"); found {
+			t.Errorf("checkpoint flushed on cancel; want none")
 		}
 	})
 }

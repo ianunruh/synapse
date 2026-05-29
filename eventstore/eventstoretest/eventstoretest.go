@@ -53,11 +53,17 @@ const TestStream es.StreamID = "test-stream"
 // `application/json` content type, a fixed RecordedAt, and a small
 // JSON payload encoding the version.
 func MakeEvent(stream es.StreamID, version uint64) es.RawEnvelope {
+	return MakeTypedEvent(stream, version, "test.event")
+}
+
+// MakeTypedEvent is [MakeEvent] with an explicit event Type, used by the
+// type-filter contract tests.
+func MakeTypedEvent(stream es.StreamID, version uint64, eventType string) es.RawEnvelope {
 	return es.RawEnvelope{
 		EventID:     fmt.Sprintf("evt-%s-%d", stream, version),
 		StreamID:    stream,
 		Version:     version,
-		Type:        "test.event",
+		Type:        eventType,
 		ContentType: "application/json",
 		RecordedAt:  time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC),
 		Payload:     fmt.Appendf(nil, `{"version":%d}`, version),
@@ -126,6 +132,9 @@ func RunSubscribableContract(t *testing.T, factory SubscribableFactory) {
 	t.Run("Subscribe_Live_ManyConcurrentSubscribers", func(t *testing.T) { testSubscribeLiveMany(t, factory) })
 	t.Run("SubscribeStream_OnlyTargetStream", func(t *testing.T) { testSubscribeStreamOnlyTarget(t, factory) })
 	t.Run("SubscribeStream_FromVersion", func(t *testing.T) { testSubscribeStreamFromVersion(t, factory) })
+	t.Run("Subscribe_TypeFilter_CatchUp", func(t *testing.T) { testSubscribeTypeFilterCatchUp(t, factory) })
+	t.Run("Subscribe_TypeFilter_Live", func(t *testing.T) { testSubscribeTypeFilterLive(t, factory) })
+	t.Run("SubscribeStream_TypeFilter", func(t *testing.T) { testSubscribeStreamTypeFilter(t, factory) })
 }
 
 // ============================================================================
@@ -764,5 +773,128 @@ func testSubscribeStreamFromVersion(t *testing.T, factory SubscribableFactory) {
 	}
 	if len(got) > 0 && got[0].Version != 4 {
 		t.Errorf("first.Version = %d, want 4", got[0].Version)
+	}
+}
+
+// testSubscribeTypeFilterCatchUp verifies that a non-live global
+// subscription with SubscriptionOptions.Types yields only matching
+// types, in order, with their true (non-contiguous) GlobalPositions.
+func testSubscribeTypeFilterCatchUp(t *testing.T, factory SubscribableFactory) {
+	ctx := t.Context()
+	store := factory(t)
+
+	// Positions 1..5 with mixed types; only A and C are wanted.
+	events := []es.RawEnvelope{
+		MakeTypedEvent("s", 1, "A"),
+		MakeTypedEvent("s", 2, "B"),
+		MakeTypedEvent("s", 3, "A"),
+		MakeTypedEvent("s", 4, "C"),
+		MakeTypedEvent("s", 5, "A"),
+	}
+	if _, err := store.Append(ctx, "s", es.NoStream, events...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	got, err := Collect(store.Subscribe(ctx, es.SubscriptionOptions{Types: []string{"A", "C"}}))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	wantPos := []uint64{1, 3, 4, 5}
+	wantType := []string{"A", "A", "C", "A"}
+	if len(got) != len(wantPos) {
+		t.Fatalf("len = %d, want %d (%v)", len(got), len(wantPos), got)
+	}
+	for i, env := range got {
+		if env.GlobalPosition != wantPos[i] || env.Type != wantType[i] {
+			t.Errorf("got[%d] = {type:%s pos:%d}, want {type:%s pos:%d}",
+				i, env.Type, env.GlobalPosition, wantType[i], wantPos[i])
+		}
+	}
+}
+
+// testSubscribeTypeFilterLive verifies that a live global subscription
+// with a type filter delivers only matching types, including across a
+// wake-up that also covered non-matching appends.
+func testSubscribeTypeFilterLive(t *testing.T, factory SubscribableFactory) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	store := factory(t)
+
+	if _, err := store.Append(ctx, "s", es.NoStream,
+		MakeTypedEvent("s", 1, "A"), MakeTypedEvent("s", 2, "B")); err != nil {
+		t.Fatalf("Append initial: %v", err)
+	}
+
+	got := make(chan es.RawEnvelope, 16)
+	errc := make(chan error, 1)
+	go func() {
+		for env, err := range store.Subscribe(ctx, es.SubscriptionOptions{Live: true, Types: []string{"A"}}) {
+			if err != nil {
+				errc <- err
+				return
+			}
+			got <- env
+		}
+	}()
+
+	recv := func(wantVersion uint64) {
+		t.Helper()
+		select {
+		case env := <-got:
+			if env.Type != "A" || env.Version != wantVersion {
+				t.Errorf("received {type:%s v:%d}, want {type:A v:%d}", env.Type, env.Version, wantVersion)
+			}
+		case err := <-errc:
+			t.Fatalf("subscribe error: %v", err)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("did not receive A v%d", wantVersion)
+		}
+	}
+
+	// Catch-up delivers the pre-existing A (v1), never the B (v2).
+	recv(1)
+
+	// A wake that bundles non-A appends must still deliver only the A's.
+	if _, err := store.Append(ctx, "s", es.Exact(2),
+		MakeTypedEvent("s", 3, "B"),
+		MakeTypedEvent("s", 4, "A"),
+		MakeTypedEvent("s", 5, "C"),
+		MakeTypedEvent("s", 6, "A")); err != nil {
+		t.Fatalf("Append more: %v", err)
+	}
+	recv(4)
+	recv(6)
+}
+
+// testSubscribeStreamTypeFilter verifies the type filter composes with
+// per-stream scoping: only matching types from the target stream.
+func testSubscribeStreamTypeFilter(t *testing.T, factory SubscribableFactory) {
+	ctx := t.Context()
+	store := factory(t)
+
+	if _, err := store.Append(ctx, "a", es.NoStream,
+		MakeTypedEvent("a", 1, "A"),
+		MakeTypedEvent("a", 2, "B"),
+		MakeTypedEvent("a", 3, "A")); err != nil {
+		t.Fatalf("Append a: %v", err)
+	}
+	if _, err := store.Append(ctx, "b", es.NoStream, MakeTypedEvent("b", 1, "A")); err != nil {
+		t.Fatalf("Append b: %v", err)
+	}
+
+	got, err := Collect(store.SubscribeStream(ctx, "a", es.SubscriptionOptions{Types: []string{"A"}}))
+	if err != nil {
+		t.Fatalf("SubscribeStream: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (%v)", len(got), got)
+	}
+	wantVersions := []uint64{1, 3}
+	for i, env := range got {
+		if env.StreamID != "a" || env.Type != "A" || env.Version != wantVersions[i] {
+			t.Errorf("got[%d] = {stream:%s type:%s v:%d}, want {stream:a type:A v:%d}",
+				i, env.StreamID, env.Type, env.Version, wantVersions[i])
+		}
 	}
 }

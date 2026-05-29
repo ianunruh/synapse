@@ -46,6 +46,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"strings"
 	"sync"
 	"time"
 
@@ -287,7 +288,7 @@ func (s *Store) Subscribe(ctx context.Context, opts es.SubscriptionOptions) iter
 
 			notify := s.currentNotify()
 
-			next, err := s.readGlobal(ctx, from, yield)
+			next, err := s.readGlobal(ctx, from, opts.Types, yield)
 			if errors.Is(err, errIterStopped) {
 				return
 			}
@@ -324,7 +325,7 @@ func (s *Store) SubscribeStream(ctx context.Context, stream es.StreamID, opts es
 
 			notify := s.currentNotify()
 
-			next, err := s.readStream(ctx, stream, from, yield)
+			next, err := s.readStream(ctx, stream, from, opts.Types, yield)
 			if errors.Is(err, errIterStopped) {
 				return
 			}
@@ -354,14 +355,17 @@ func (s *Store) SubscribeStream(ctx context.Context, stream es.StreamID, opts es
 func (s *Store) readGlobal(
 	ctx context.Context,
 	from uint64,
+	types []string,
 	yield func(es.RawEnvelope, error) bool,
 ) (uint64, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT global_position, event_id, stream_id, version, type, content_type,
+	query := `SELECT global_position, event_id, stream_id, version, type, content_type,
 			recorded_at, causation, correlation, metadata, payload
-			FROM events WHERE global_position > ? ORDER BY global_position`,
-		int64(from),
-	)
+			FROM events WHERE global_position > ?`
+	args := []any{int64(from)}
+	query, args = appendTypeFilter(query, args, types)
+	query += " ORDER BY global_position"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("synapse/sqlite: subscribe query: %w", err)
 	}
@@ -388,14 +392,17 @@ func (s *Store) readStream(
 	ctx context.Context,
 	stream es.StreamID,
 	from uint64,
+	types []string,
 	yield func(es.RawEnvelope, error) bool,
 ) (uint64, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT global_position, event_id, stream_id, version, type, content_type,
+	query := `SELECT global_position, event_id, stream_id, version, type, content_type,
 			recorded_at, causation, correlation, metadata, payload
-			FROM events WHERE stream_id = ? AND version > ? ORDER BY version`,
-		string(stream), int64(from),
-	)
+			FROM events WHERE stream_id = ? AND version > ?`
+	args := []any{string(stream), int64(from)}
+	query, args = appendTypeFilter(query, args, types)
+	query += " ORDER BY version"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("synapse/sqlite: subscribe-stream query: %w", err)
 	}
@@ -422,6 +429,20 @@ func (s *Store) readStream(
 // errors. It is never returned to callers (the read helpers translate
 // it to a normal return).
 var errIterStopped = errors.New("iterator stopped by consumer")
+
+// appendTypeFilter adds an `AND type IN (...)` clause and the matching
+// args when types is non-empty. Call it after the WHERE clause and
+// before any ORDER BY.
+func appendTypeFilter(query string, args []any, types []string) (string, []any) {
+	if len(types) == 0 {
+		return query, args
+	}
+	query += " AND type IN (" + strings.Repeat("?, ", len(types)-1) + "?)"
+	for _, t := range types {
+		args = append(args, t)
+	}
+	return query, args
+}
 
 func (s *Store) head(ctx context.Context, stream es.StreamID) (es.Revision, error) {
 	var current int64
