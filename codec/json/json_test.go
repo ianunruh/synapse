@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/ianunruh/synapse/codec/codectest"
 	jsoncodec "github.com/ianunruh/synapse/codec/json"
-	"github.com/ianunruh/synapse/es"
 )
 
 type Order struct {
@@ -23,7 +24,22 @@ type Item struct {
 	Quantity int    `json:"quantity"`
 }
 
-func TestFor_ContentType(t *testing.T) {
+// TestContract runs the shared codec contract; format-specific behavior
+// is covered by the tests below.
+func TestContract(t *testing.T) {
+	codectest.RunContract(t,
+		jsoncodec.For[Order],
+		"order.placed",
+		Order{
+			ID:    "order-1",
+			Items: []Item{{SKU: "abc", Quantity: 2}, {SKU: "xyz", Quantity: 1}},
+			Total: 4250,
+		},
+		func(a, b Order) bool { return reflect.DeepEqual(a, b) },
+	)
+}
+
+func TestContentType(t *testing.T) {
 	if got := jsoncodec.For[Order]().ContentType(); got != "application/json" {
 		t.Errorf("ContentType = %q, want application/json", got)
 	}
@@ -32,30 +48,7 @@ func TestFor_ContentType(t *testing.T) {
 	}
 }
 
-func TestFor_RoundTrip(t *testing.T) {
-	c := jsoncodec.For[Order]()
-	in := Order{
-		ID:    "order-1",
-		Items: []Item{{SKU: "abc", Quantity: 2}, {SKU: "xyz", Quantity: 1}},
-		Total: 4250,
-	}
-	data, err := c.Marshal(in)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	out, err := c.Unmarshal(data)
-	if err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if out.ID != in.ID || out.Total != in.Total || len(out.Items) != len(in.Items) {
-		t.Errorf("round-trip mismatch:\nin  = %+v\nout = %+v", in, out)
-	}
-	if out.Items[0].SKU != "abc" || out.Items[0].Quantity != 2 {
-		t.Errorf("Items[0] = %+v, want {SKU:abc Quantity:2}", out.Items[0])
-	}
-}
-
-func TestFor_TagsRespected(t *testing.T) {
+func TestTagsRespected(t *testing.T) {
 	data, err := jsoncodec.For[Order]().Marshal(Order{ID: "x", Total: 5})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -68,7 +61,7 @@ func TestFor_TagsRespected(t *testing.T) {
 	}
 }
 
-func TestFor_OmitZero(t *testing.T) {
+func TestOmitZero(t *testing.T) {
 	// Items uses `omitzero` (Go 1.24+). An empty slice should be elided.
 	data, err := jsoncodec.For[Order]().Marshal(Order{ID: "x"})
 	if err != nil {
@@ -109,7 +102,7 @@ type Receipt struct {
 	Total Money `json:"total"`
 }
 
-func TestFor_CustomMarshalerHonored(t *testing.T) {
+func TestCustomMarshalerHonored(t *testing.T) {
 	c := jsoncodec.For[Receipt]()
 	data, err := c.Marshal(Receipt{Total: Money{Cents: 1234}})
 	if err != nil {
@@ -127,7 +120,7 @@ func TestFor_CustomMarshalerHonored(t *testing.T) {
 	}
 }
 
-func TestFor_MarshalError(t *testing.T) {
+func TestMarshalError(t *testing.T) {
 	type unsupported struct{ Ch chan int }
 	_, err := jsoncodec.For[unsupported]().Marshal(unsupported{Ch: make(chan int)})
 	if err == nil {
@@ -135,61 +128,32 @@ func TestFor_MarshalError(t *testing.T) {
 	}
 }
 
-func TestFor_UnmarshalError(t *testing.T) {
+func TestUnmarshalError(t *testing.T) {
 	_, err := jsoncodec.For[Order]().Unmarshal([]byte("{not-json"))
 	if err == nil {
 		t.Errorf("expected error unmarshaling malformed JSON")
 	}
 }
 
-func TestFor_RegistryIntegration(t *testing.T) {
-	reg := es.NewRegistry()
-	es.Register(reg, "order.placed", jsoncodec.For[Order]())
-
-	c, ok := reg.Lookup("order.placed")
-	if !ok {
-		t.Fatalf("Lookup: not found")
-	}
-	if c.ContentType() != "application/json" {
-		t.Errorf("ContentType = %q, want application/json", c.ContentType())
-	}
-
-	in := Order{ID: "via-registry", Total: 99}
-	data, err := c.Marshal(in)
+func TestEquivalentToDirectMarshal(t *testing.T) {
+	// Our codec is a thin wrapper around encoding/json with no
+	// transformations — output should match a direct json.Marshal
+	// byte-for-byte.
+	in := Order{ID: "compare", Total: 7}
+	direct, err := json.Marshal(in)
 	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+		t.Fatalf("json.Marshal: %v", err)
 	}
-	out, err := c.Unmarshal(data)
+	via, err := jsoncodec.For[Order]().Marshal(in)
 	if err != nil {
-		t.Fatalf("Unmarshal: %v", err)
+		t.Fatalf("codec.Marshal: %v", err)
 	}
-	order, ok := out.(Order)
-	if !ok {
-		t.Fatalf("Unmarshal returned %T, want Order", out)
-	}
-	if order.ID != "via-registry" || order.Total != 99 {
-		t.Errorf("registry round-trip mismatch: %+v", order)
+	if string(direct) != string(via) {
+		t.Errorf("output differs from direct json.Marshal:\ndirect = %s\nvia    = %s", direct, via)
 	}
 }
 
-func TestFor_RegistryTypeMismatch(t *testing.T) {
-	// The registry adapter (typedAdapter[E]) rejects payloads whose
-	// dynamic type does not match the registered E.
-	reg := es.NewRegistry()
-	es.Register(reg, "order.placed", jsoncodec.For[Order]())
-
-	c, _ := reg.Lookup("order.placed")
-	_, err := c.Marshal("not an Order")
-	if !errors.Is(err, es.ErrPayloadType) {
-		t.Errorf("err = %v, want wrap of ErrPayloadType", err)
-	}
-	var pe *es.PayloadTypeError
-	if !errors.As(err, &pe) {
-		t.Errorf("err is not *PayloadTypeError: %T", err)
-	}
-}
-
-func TestFor_NestedSliceMap(t *testing.T) {
+func TestNestedSliceMap(t *testing.T) {
 	type Config struct {
 		Name    string          `json:"name"`
 		Flags   map[string]bool `json:"flags"`
@@ -211,41 +175,5 @@ func TestFor_NestedSliceMap(t *testing.T) {
 	}
 	if out.Name != in.Name || len(out.Flags) != 2 || len(out.Listens) != 2 {
 		t.Errorf("nested round-trip mismatch:\nin  = %+v\nout = %+v", in, out)
-	}
-}
-
-func TestFor_StatelessSharing(t *testing.T) {
-	// Two instances of For[Order]() are interchangeable; the codec is
-	// stateless and safe to share across goroutines.
-	a := jsoncodec.For[Order]()
-	b := jsoncodec.For[Order]()
-	data, err := a.Marshal(Order{ID: "shared"})
-	if err != nil {
-		t.Fatalf("Marshal a: %v", err)
-	}
-	out, err := b.Unmarshal(data)
-	if err != nil {
-		t.Fatalf("Unmarshal b: %v", err)
-	}
-	if out.ID != "shared" {
-		t.Errorf("cross-instance round-trip failed: %+v", out)
-	}
-}
-
-func TestFor_EquivalentToDirectMarshal(t *testing.T) {
-	// Our codec is a thin wrapper around encoding/json with no
-	// transformations — output should match a direct json.Marshal
-	// byte-for-byte.
-	in := Order{ID: "compare", Total: 7}
-	direct, err := json.Marshal(in)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	via, err := jsoncodec.For[Order]().Marshal(in)
-	if err != nil {
-		t.Fatalf("codec.Marshal: %v", err)
-	}
-	if string(direct) != string(via) {
-		t.Errorf("output differs from direct json.Marshal:\ndirect = %s\nvia    = %s", direct, via)
 	}
 }

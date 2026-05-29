@@ -4,6 +4,7 @@ use (
 	.
 	./checkpointstore/postgres
 	./checkpointstore/sqlite
+	./codec/proto
 	./eventstore/postgres
 	./eventstore/sqlite
 	./examples/persistent
