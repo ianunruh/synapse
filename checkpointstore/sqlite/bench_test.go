@@ -1,0 +1,35 @@
+package sqlite_test
+
+import (
+	"database/sql"
+	"path/filepath"
+	"testing"
+
+	"github.com/ianunruh/synapse/checkpointstore/checkpointstorebench"
+	sqlitestore "github.com/ianunruh/synapse/checkpointstore/sqlite"
+	"github.com/ianunruh/synapse/es"
+
+	_ "modernc.org/sqlite"
+)
+
+func newStoreB(b *testing.B) *sqlitestore.Store {
+	b.Helper()
+	dsn := "file:" + filepath.Join(b.TempDir(), "checkpoints.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		b.Fatalf("sql.Open: %v", err)
+	}
+	b.Cleanup(func() { db.Close() })
+	store, err := sqlitestore.New(b.Context(), db)
+	if err != nil {
+		b.Fatalf("sqlitestore.New: %v", err)
+	}
+	return store
+}
+
+func BenchmarkSQLiteStore(b *testing.B) {
+	checkpointstorebench.Run(b, func(b *testing.B) es.CheckpointStore {
+		return newStoreB(b)
+	})
+}

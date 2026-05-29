@@ -78,6 +78,7 @@ A full walkthrough is in [`docs/getting-started.md`](docs/getting-started.md). R
 
 - [Getting started](docs/getting-started.md) — a 20-minute walkthrough that builds the Counter aggregate above into a service with commands, a projection, snapshots, and a SQLite backend.
 - [Architecture Decision Records](docs/adr/) — 21 records explaining why the library is shaped the way it is.
+- [Benchmarks](docs/benchmarks.md) — baseline numbers for the core hot paths and the included store backends.
 - Package docs: [pkg.go.dev/github.com/ianunruh/synapse/es](https://pkg.go.dev/github.com/ianunruh/synapse/es).
 
 ## Packages
