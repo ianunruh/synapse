@@ -116,6 +116,18 @@ reg := es.NewRegistry()
 es.Register(reg, "counter.incremented", jsoncodec.For[CounterIncremented]())
 ```
 
+When an event's shape changes — fields added, renamed, restructured — register an `Upcaster` from the old type to the new one. Old events in the log are transformed on read; the aggregate's `Apply` only sees the latest shape:
+
+```go
+es.RegisterUpcaster[OrderPlacedV1, OrderPlacedV2](reg,
+    "order.placed.v1", "order.placed.v2",
+    func(in OrderPlacedV1) (OrderPlacedV2, error) {
+        return OrderPlacedV2{Total: in.Amount, Currency: "USD"}, nil
+    })
+```
+
+Upcasters chain (`v1 → v2 → v3` works without any special call-site handling) and apply to snapshots too. See [ADR-0023](adr/0023-event-upcasters.md) for the design.
+
 A `Repository[A]` wires the event store, the registry, and the aggregate constructor:
 
 ```go

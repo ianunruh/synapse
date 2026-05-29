@@ -43,20 +43,26 @@ type TypedCodec[E any] interface {
 	Unmarshal([]byte) (E, error)
 }
 
-// Registry maps event Type strings to [EventCodec] implementations.
-// A single Registry may mix codecs that use different wire formats —
-// for instance, JSON for legacy events and protobuf for new ones.
+// Registry maps event Type strings to [EventCodec] implementations
+// and, optionally, to [Upcaster] functions for schema evolution. A
+// single Registry may mix codecs that use different wire formats —
+// for instance, JSON for legacy events and protobuf for new ones —
+// and upcasters that turn old event versions into newer ones.
 //
 // A Registry is safe for concurrent use. Registration is typically
-// done at startup; Lookup is called on every save and load.
+// done at startup; Lookup and Upcast are called on every load.
 type Registry struct {
-	mu     sync.RWMutex
-	codecs map[string]EventCodec
+	mu        sync.RWMutex
+	codecs    map[string]EventCodec
+	upcasters map[string]Upcaster
 }
 
 // NewRegistry returns an empty [Registry].
 func NewRegistry() *Registry {
-	return &Registry{codecs: make(map[string]EventCodec)}
+	return &Registry{
+		codecs:    make(map[string]EventCodec),
+		upcasters: make(map[string]Upcaster),
+	}
 }
 
 // Register associates an [EventCodec] with an event Type. Registering

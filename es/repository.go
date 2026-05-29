@@ -162,7 +162,11 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 				if err != nil {
 					return zero, fmt.Errorf("synapse: unmarshal snapshot %s: %w", snap.Type, err)
 				}
-				if err := snapper.Restore(state); err != nil {
+				upcasted, _, err := r.reg.Upcast(state, snap.Type)
+				if err != nil {
+					return zero, fmt.Errorf("synapse: upcast snapshot %s at v%d: %w", snap.Type, snap.Version, err)
+				}
+				if err := snapper.Restore(upcasted); err != nil {
 					return zero, fmt.Errorf("synapse: restore %s at v%d: %w", snap.Type, snap.Version, err)
 				}
 				agg.SetVersion(snap.Version)
@@ -188,13 +192,18 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 			return zero, fmt.Errorf("synapse: unmarshal %s at v%d: %w", raw.Type, raw.Version, err)
 		}
 
+		payload, finalType, err := r.reg.Upcast(payload, raw.Type)
+		if err != nil {
+			return zero, fmt.Errorf("synapse: upcast %s at v%d: %w", raw.Type, raw.Version, err)
+		}
+
 		env := Envelope{
 			EventID:        raw.EventID,
 			StreamID:       raw.StreamID,
 			Version:        raw.Version,
 			GlobalPosition: raw.GlobalPosition,
 			RecordedAt:     raw.RecordedAt,
-			Type:           raw.Type,
+			Type:           finalType,
 			ContentType:    raw.ContentType,
 			Causation:      raw.Causation,
 			Correlation:    raw.Correlation,

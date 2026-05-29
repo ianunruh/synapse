@@ -241,13 +241,18 @@ func (r *Runner) decode(raw es.RawEnvelope) (es.Envelope, error) {
 		return es.Envelope{}, fmt.Errorf("synapse/projection: unmarshal %s at pos=%d: %w",
 			raw.Type, raw.GlobalPosition, err)
 	}
+	payload, finalType, err := r.reg.Upcast(payload, raw.Type)
+	if err != nil {
+		return es.Envelope{}, fmt.Errorf("synapse/projection: upcast %s at pos=%d: %w",
+			raw.Type, raw.GlobalPosition, err)
+	}
 	return es.Envelope{
 		EventID:        raw.EventID,
 		StreamID:       raw.StreamID,
 		Version:        raw.Version,
 		GlobalPosition: raw.GlobalPosition,
 		RecordedAt:     raw.RecordedAt,
-		Type:           raw.Type,
+		Type:           finalType,
 		ContentType:    raw.ContentType,
 		Causation:      raw.Causation,
 		Correlation:    raw.Correlation,
