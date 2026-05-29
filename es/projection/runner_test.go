@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	checkpointmem "github.com/ianunruh/synapse/checkpointstore/memory"
 	"github.com/ianunruh/synapse/es"
@@ -111,66 +111,57 @@ func TestRunner_PerStreamSubscription_CatchUp(t *testing.T) {
 // ----- Live mode ---------------------------------------------------------
 
 func TestRunner_LiveMode_SeesNewEvents(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
 
-	store := memory.New()
-	reg := testdomain.NewRegistry()
+		store := memory.New()
+		reg := testdomain.NewRegistry()
 
-	// Seed two events first.
-	seedCounters(t, store, reg, 1, 2)
+		// Seed two events first.
+		seedCounters(t, store, reg, 1, 2)
 
-	proj := &recordingProjection{}
-	r := projection.NewRunner("live", store, reg, proj, projection.WithLive(true))
+		proj := &recordingProjection{}
+		r := projection.NewRunner("live", store, reg, proj, projection.WithLive(true))
 
-	done := make(chan error, 1)
-	go func() { done <- r.Run(ctx) }()
+		done := make(chan error, 1)
+		go func() { done <- r.Run(ctx) }()
 
-	// Wait for the runner to consume the initial events.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if len(proj.Recorded()) == 2 {
-			break
+		// Wait for the runner to consume the initial events.
+		synctest.Wait()
+		if got := len(proj.Recorded()); got != 2 {
+			t.Fatalf("after seed: recorded %d, want 2", got)
 		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	if got := len(proj.Recorded()); got != 2 {
-		t.Fatalf("after seed: recorded %d, want 2", got)
-	}
 
-	// Append more events live.
-	repo := es.NewRepository(store, reg, testdomain.NewCounter)
-	stream := es.StreamID(testdomain.CounterStream + "-a")
-	loaded, err := repo.Load(ctx, stream)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	loaded.Increment(99)
-	if err := repo.Save(ctx, loaded); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	// Verify the runner sees the new event.
-	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if len(proj.Recorded()) == 3 {
-			break
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	if got := len(proj.Recorded()); got != 3 {
-		t.Errorf("after live append: recorded %d, want 3", got)
-	}
-
-	cancel()
-	select {
-	case err := <-done:
+		// Append more events live.
+		repo := es.NewRepository(store, reg, testdomain.NewCounter)
+		stream := es.StreamID(testdomain.CounterStream + "-a")
+		loaded, err := repo.Load(ctx, stream)
 		if err != nil {
-			t.Errorf("Run after cancel: %v", err)
+			t.Fatalf("Load: %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Errorf("Run did not exit after cancel")
-	}
+		loaded.Increment(99)
+		if err := repo.Save(ctx, loaded); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		// Verify the runner sees the new event.
+		synctest.Wait()
+		if got := len(proj.Recorded()); got != 3 {
+			t.Errorf("after live append: recorded %d, want 3", got)
+		}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Run after cancel: %v", err)
+			}
+		default:
+			t.Errorf("Run did not exit after cancel")
+		}
+	})
 }
 
 // ----- Checkpoint integration --------------------------------------------
@@ -363,26 +354,29 @@ func TestRunner_UnknownEventType_FailsWithCodecError(t *testing.T) {
 // ----- Context cancellation ---------------------------------------------
 
 func TestRunner_ContextCanceled_ReturnsCleanly(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
 
-	store := memory.New()
-	reg := testdomain.NewRegistry()
-	proj := &recordingProjection{}
-	r := projection.NewRunner("ctx", store, reg, proj, projection.WithLive(true))
+		store := memory.New()
+		reg := testdomain.NewRegistry()
+		proj := &recordingProjection{}
+		r := projection.NewRunner("ctx", store, reg, proj, projection.WithLive(true))
 
-	done := make(chan error, 1)
-	go func() { done <- r.Run(ctx) }()
+		done := make(chan error, 1)
+		go func() { done <- r.Run(ctx) }()
 
-	// Let it block waiting for events, then cancel.
-	time.Sleep(20 * time.Millisecond)
-	cancel()
+		// Let it block waiting for events, then cancel.
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Run: err = %v, want nil on cancel", err)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Run: err = %v, want nil on cancel", err)
+			}
+		default:
+			t.Errorf("Run did not exit on cancel")
 		}
-	case <-time.After(time.Second):
-		t.Errorf("Run did not exit on cancel")
-	}
+	})
 }
