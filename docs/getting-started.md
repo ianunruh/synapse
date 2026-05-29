@@ -177,6 +177,16 @@ repo := es.NewRepository(memory.New(), reg, NewCounter,
 
 Middleware composes left-to-right: the first wraps the second wraps the third, around the load-handle-save pipeline. See [ADR-0012](adr/0012-command-middleware.md) for the model.
 
+For request-scoped identifiers — correlation IDs from HTTP middleware, user IDs, trace context — wrap the context once and the library threads them onto every event recorded under it:
+
+```go
+ctx = es.WithCorrelation(ctx, requestID)
+ctx = es.WithMetadata(ctx, es.Metadata{"user": userID})
+_ = es.Execute(ctx, repo, stream, cmd, handler) // events carry these IDs
+```
+
+`projection.Runner` propagates the inbound event's `EventID` (as the outbound `Causation`) and its `Correlation`/`Metadata` into the context it hands to `Project`, so a projection that issues follow-up commands gets the saga chain stamped automatically. Opt out with `projection.WithoutContextEnrichment()`. See [ADR-0022](adr/0022-context-causation-correlation-metadata.md).
+
 ## 5. A projection
 
 A projection consumes events to build derived state — a read model, a side effect, an integration. Implement the one-method `es.Projection`; the library's `projection.Runner` handles subscription, decoding, error policy, and checkpointing.

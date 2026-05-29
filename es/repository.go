@@ -241,6 +241,9 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 	}
 
 	now := r.clock.NowUTC()
+	ctxCorrelation := correlationFromContext(ctx)
+	ctxCausation := causationFromContext(ctx)
+	ctxMetadata := metadataFromContext(ctx)
 	raws := make([]RawEnvelope, len(pending))
 	for i, env := range pending {
 		c, ok := r.reg.Lookup(env.Type)
@@ -260,6 +263,14 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 		if recordedAt.IsZero() {
 			recordedAt = now
 		}
+		correlation := env.Correlation
+		if correlation == "" {
+			correlation = ctxCorrelation
+		}
+		causation := env.Causation
+		if causation == "" {
+			causation = ctxCausation
+		}
 
 		raws[i] = RawEnvelope{
 			EventID:     eventID,
@@ -268,9 +279,9 @@ func (r *Repository[A]) Save(ctx context.Context, agg A) error {
 			RecordedAt:  recordedAt,
 			Type:        env.Type,
 			ContentType: c.ContentType(),
-			Causation:   env.Causation,
-			Correlation: env.Correlation,
-			Metadata:    env.Metadata,
+			Causation:   causation,
+			Correlation: correlation,
+			Metadata:    mergeMetadata(ctxMetadata, env.Metadata),
 			Payload:     data,
 		}
 	}

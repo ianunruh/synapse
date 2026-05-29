@@ -36,25 +36,27 @@ import (
 // goroutine at a time. Concurrent calls to Run on the same Runner are
 // undefined.
 type Runner struct {
-	name       string
-	store      es.SubscribableEventStore
-	reg        *es.Registry
-	projection es.Projection
-	checkpoint es.CheckpointStore
-	live       bool
-	stream     es.StreamID
-	onError    func(env es.Envelope, err error) bool
-	logger     *slog.Logger
+	name              string
+	store             es.SubscribableEventStore
+	reg               *es.Registry
+	projection        es.Projection
+	checkpoint        es.CheckpointStore
+	live              bool
+	stream            es.StreamID
+	onError           func(env es.Envelope, err error) bool
+	logger            *slog.Logger
+	disableEnrichment bool
 }
 
 // runnerOptions collects the configurable knobs threaded through
 // [RunnerOption] values.
 type runnerOptions struct {
-	checkpoint es.CheckpointStore
-	live       bool
-	stream     es.StreamID
-	onError    func(env es.Envelope, err error) bool
-	logger     *slog.Logger
+	checkpoint        es.CheckpointStore
+	live              bool
+	stream            es.StreamID
+	onError           func(env es.Envelope, err error) bool
+	logger            *slog.Logger
+	disableEnrichment bool
 }
 
 // RunnerOption configures a [Runner] at construction time.
@@ -100,6 +102,18 @@ func WithLogger(l *slog.Logger) RunnerOption {
 	return func(o *runnerOptions) { o.logger = l }
 }
 
+// WithoutContextEnrichment disables the Runner's default behavior of
+// deriving a child context for each [es.Projection.Project] call with
+// the inbound event's identifiers — EventID as causation, Correlation
+// and Metadata propagated. With enrichment on, a Projection whose body
+// calls [es.Execute] or [es.Repository.Save] gets the right saga
+// chain stamped onto outbound events automatically. Opt out when the
+// Projection records no events of its own, or when you want full
+// control over the context Project sees.
+func WithoutContextEnrichment() RunnerOption {
+	return func(o *runnerOptions) { o.disableEnrichment = true }
+}
+
 // NewRunner constructs a [Runner] that consumes events from store,
 // decoding payloads through reg and applying them via proj. name
 // identifies the projection for checkpointing.
@@ -119,15 +133,16 @@ func NewRunner(
 		opt(&o)
 	}
 	return &Runner{
-		name:       name,
-		store:      store,
-		reg:        reg,
-		projection: proj,
-		checkpoint: o.checkpoint,
-		live:       o.live,
-		stream:     o.stream,
-		onError:    o.onError,
-		logger:     o.logger,
+		name:              name,
+		store:             store,
+		reg:               reg,
+		projection:        proj,
+		checkpoint:        o.checkpoint,
+		live:              o.live,
+		stream:            o.stream,
+		onError:           o.onError,
+		logger:            o.logger,
+		disableEnrichment: o.disableEnrichment,
 	}
 }
 
@@ -179,7 +194,17 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 
-		if err := r.projection.Project(ctx, env); err != nil {
+		projectCtx := ctx
+		if !r.disableEnrichment {
+			projectCtx = es.WithCausation(projectCtx, env.EventID)
+			if env.Correlation != "" {
+				projectCtx = es.WithCorrelation(projectCtx, env.Correlation)
+			}
+			if len(env.Metadata) > 0 {
+				projectCtx = es.WithMetadata(projectCtx, env.Metadata)
+			}
+		}
+		if err := r.projection.Project(projectCtx, env); err != nil {
 			if r.onError == nil || !r.onError(env, err) {
 				return err
 			}
