@@ -16,6 +16,9 @@ func newStore(tb testing.TB) *pgstore.Store {
 	if err != nil {
 		tb.Fatalf("pgstore.New: %v", err)
 	}
+	// Close stops the shared LISTEN goroutine and releases its
+	// connection before pgtest closes the pool (cleanups run LIFO).
+	tb.Cleanup(store.Close)
 	return store
 }
 

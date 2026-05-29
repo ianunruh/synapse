@@ -77,11 +77,12 @@ func Pool(tb testing.TB) *pgxpool.Pool {
 	if err != nil {
 		tb.Fatalf("pgtest: parse config: %v", err)
 	}
-	// The subscribable contract runs many concurrent live subscribers,
-	// each holding a connection for its LISTEN. pgxpool's default
-	// (max(4, NumCPU)) is too small for that and deadlocks the pool, so
-	// give tests generous headroom.
-	cfg.MaxConns = 32
+	// Keep the pool deliberately small. The subscribable contract runs
+	// 8 concurrent live subscribers; with the shared-listener design
+	// (ADR-0025) they hold no connection while waiting, so a small pool
+	// suffices and proves subscriber count is decoupled from pool size.
+	// A regression to per-subscriber LISTEN would deadlock here.
+	cfg.MaxConns = 6
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		tb.Fatalf("pgtest: test pool: %v", err)

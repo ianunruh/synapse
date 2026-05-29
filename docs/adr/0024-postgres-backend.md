@@ -39,6 +39,13 @@ The advisory lock guarantees that committed `global_position` values are monoton
 
 ### Subscribe: hold a connection, `LISTEN synapse_events`, drain + wait
 
+> **Superseded by [ADR-0025](0025-postgres-shared-listener.md).** The
+> per-subscriber `LISTEN` described here was replaced by a single shared
+> listener with in-process fan-out, because holding a connection per
+> subscriber caps concurrent subscribers at the pool size. The rest of
+> this ADR (Append, schema, snapshot/checkpoint stores, testing) still
+> stands.
+
 Subscribers acquire a pgxpool connection for the lifetime of the iterator (a real concern for pool sizing). The connection executes `LISTEN synapse_events`; the loop alternates between SELECTing new events past a cursor and blocking on `WaitForNotification`. The cursor advances after each yield so the same SELECT serves both catch-up and post-notification reads idempotently.
 
 The notification payload is `<stream_id>:<max_global_position>`. `SubscribeStream` consumers parse it and skip the SELECT entirely when the notification is for a different stream — turning a busy global channel into per-stream-targeted wake-ups without the operational complexity of per-stream channels.

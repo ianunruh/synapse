@@ -21,15 +21,20 @@
 //     subscribers never see a position N before position N-1 commits.
 //     The cost is that concurrent appends queue rather than parallelize;
 //     in v0 this is a deliberate simplicity-vs-throughput trade.
-//   - Live subscribers LISTEN on the channel "synapse_events"; Append
-//     emits a NOTIFY with payload "<stream_id>:<max_global_position>"
-//     inside the same transaction, so the wake-up fires at COMMIT.
-//     SubscribeStream consumers can skip the follow-up SELECT when
-//     the notification's stream_id does not match their target.
+//   - Append emits a NOTIFY on the channel "synapse_events" inside the
+//     same transaction, so the wake-up fires at COMMIT.
+//   - A single shared goroutine per Store holds one connection running
+//     LISTEN "synapse_events" and, on each notification, wakes every
+//     live subscriber through an in-process broadcast. Woken subscribers
+//     run a cursor SELECT on a pooled connection and release it; they
+//     hold no connection while waiting. So the number of concurrent live
+//     subscribers is independent of pool size — the pool only needs to
+//     cover the one listener connection plus concurrent reads and
+//     appends. The listener starts lazily on the first live subscription
+//     and runs until [Store.Close]. See ADR-0025.
 //
-// LISTEN holds a connection from the pool for the lifetime of the
-// subscription. Pool sizing matters when many live subscribers run
-// concurrently.
+// Because the Store owns that goroutine and its connection, callers must
+// call [Store.Close] before closing the pool.
 package postgres
 
 import (
@@ -39,8 +44,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"strconv"
-	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ianunruh/synapse/es"
@@ -90,24 +95,37 @@ func WithoutMigrate() Option {
 
 // Store is a Postgres-backed [es.SubscribableEventStore].
 //
-// The caller owns the pool and is responsible for closing it. The
-// Store does not retain any goroutines of its own — every active
-// LISTEN lives inside the goroutine consuming a Subscribe iterator.
+// The caller owns the pool and is responsible for closing it. The Store
+// additionally owns a single shared LISTEN goroutine that is started
+// lazily on the first live subscription and holds one connection for
+// its lifetime; [Store.Close] stops it. Call Close before closing the
+// pool. See ADR-0025.
 type Store struct {
 	pool *pgxpool.Pool
-}
 
-// querier is the subset of *pgxpool.Pool and *pgxpool.Conn that
-// readSince needs. Catch-up reads in the live subscribe loop run on
-// the connection already held for LISTEN, so a live subscriber holds
-// exactly one connection rather than acquiring a second from the pool
-// per read (see the Concurrency model note above).
-type querier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	// listenerCtx governs the shared LISTEN goroutine's lifetime; Close
+	// cancels it. The goroutine starts once (startOnce) on the first
+	// live subscription and closes listenerDone when it exits, so Close
+	// can wait for the held connection to be released.
+	listenerCtx  context.Context
+	cancel       context.CancelFunc
+	startOnce    sync.Once
+	started      atomic.Bool
+	listenerDone chan struct{}
+	closeOnce    sync.Once
+
+	// notify is the in-process broadcast channel. The listener
+	// close-and-replaces it on every NOTIFY (and on each reconnect),
+	// waking all live subscribers; each then runs a cursor SELECT.
+	mu     sync.Mutex
+	notify chan struct{}
 }
 
 // New returns a Store wrapping pool. By default applies [Schema];
 // pass [WithoutMigrate] to skip when migrations are external.
+//
+// The returned Store must be closed with [Store.Close] before the pool
+// is closed.
 func New(ctx context.Context, pool *pgxpool.Pool, opts ...Option) (*Store, error) {
 	var o options
 	for _, opt := range opts {
@@ -118,7 +136,119 @@ func New(ctx context.Context, pool *pgxpool.Pool, opts ...Option) (*Store, error
 			return nil, err
 		}
 	}
-	return &Store{pool: pool}, nil
+	lctx, cancel := context.WithCancel(context.Background())
+	return &Store{
+		pool:         pool,
+		listenerCtx:  lctx,
+		cancel:       cancel,
+		listenerDone: make(chan struct{}),
+		notify:       make(chan struct{}),
+	}, nil
+}
+
+// Close stops the shared LISTEN goroutine and releases the connection
+// it holds. Call Close before closing the underlying pool; otherwise
+// pgxpool's Close blocks waiting for the listener's connection. Close is
+// idempotent.
+//
+// After Close, live subscriptions no longer receive wake-ups (their
+// one-shot catch-up read still works); cancel their contexts to stop
+// them.
+func (s *Store) Close() {
+	s.closeOnce.Do(func() {
+		s.cancel()
+		if s.started.Load() {
+			<-s.listenerDone
+		}
+	})
+}
+
+// startListener launches the shared LISTEN goroutine exactly once, on
+// the first live subscription.
+func (s *Store) startListener() {
+	s.startOnce.Do(func() {
+		s.started.Store(true)
+		go s.runListener()
+	})
+}
+
+// listen backoff bounds for reconnecting the shared LISTEN connection.
+const (
+	listenBaseBackoff = 50 * time.Millisecond
+	listenMaxBackoff  = 5 * time.Second
+)
+
+// runListener owns the shared LISTEN connection for the Store's
+// lifetime. It reconnects with capped backoff and wakes all subscribers
+// on every drop so they re-read against their cursor.
+func (s *Store) runListener() {
+	defer close(s.listenerDone)
+
+	backoff := listenBaseBackoff
+	for s.listenerCtx.Err() == nil {
+		established := s.listenSession()
+		if s.listenerCtx.Err() != nil {
+			return
+		}
+		// The LISTEN connection dropped. Wake every subscriber so they
+		// re-read against their cursor — covering anything appended
+		// during the gap — then back off before reconnecting.
+		s.broadcast()
+		if established {
+			backoff = listenBaseBackoff
+		}
+		select {
+		case <-s.listenerCtx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, listenMaxBackoff)
+	}
+}
+
+// listenSession acquires a connection, LISTENs, and broadcasts on every
+// notification until the connection or context fails. It returns whether
+// LISTEN was successfully established (used to reset reconnect backoff).
+func (s *Store) listenSession() bool {
+	ctx := s.listenerCtx
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return false
+	}
+	defer conn.Release()
+	defer func() { _, _ = conn.Exec(context.Background(), "UNLISTEN *") }()
+
+	if _, err := conn.Exec(ctx, "LISTEN "+notifyChannel); err != nil {
+		return false
+	}
+	// Wake subscribers once on (re)establishing LISTEN, closing the
+	// window where an append landed before the listener was attached.
+	s.broadcast()
+
+	for {
+		if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+			return true
+		}
+		s.broadcast()
+	}
+}
+
+// currentNotify returns the channel a subscriber should wait on. It must
+// be captured before the catch-up read so a NOTIFY arriving between the
+// read and the wait is not lost.
+func (s *Store) currentNotify() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notify
+}
+
+// broadcast wakes every waiting subscriber by closing the current notify
+// channel and installing a fresh one.
+func (s *Store) broadcast() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	close(s.notify)
+	s.notify = make(chan struct{})
 }
 
 // Append implements [es.EventStore].
@@ -285,11 +415,18 @@ func (s *Store) SubscribeStream(ctx context.Context, stream es.StreamID, opts es
 	}
 }
 
-// subscribeLoop implements the catch-up + LISTEN/NOTIFY tail for both
-// global and per-stream subscriptions. An empty filterStream means
-// global. The cursor tracks the highest yielded global_position (or
-// version for per-stream), so the same SELECT can serve catch-up and
-// post-notification reads idempotently.
+// subscribeLoop implements the catch-up + live tail for both global and
+// per-stream subscriptions. An empty filterStream means global. The
+// cursor tracks the highest yielded global_position (or version for
+// per-stream), so the same SELECT serves catch-up and post-wake reads
+// idempotently.
+//
+// Live subscribers hold no connection while waiting: they capture the
+// shared notify channel, read against the pool, release, then wait for
+// the shared listener to broadcast. Capturing the channel before the
+// read is what makes a NOTIFY arriving mid-read safe — it closes the
+// channel we already hold, so the wait returns immediately and we
+// re-read.
 func (s *Store) subscribeLoop(
 	ctx context.Context,
 	opts es.SubscriptionOptions,
@@ -298,25 +435,8 @@ func (s *Store) subscribeLoop(
 ) {
 	from := opts.From
 
-	if !opts.Live {
-		_, _, err := s.readSince(ctx, s.pool, filterStream, from, yield)
-		if err != nil {
-			yield(es.RawEnvelope{}, err)
-		}
-		return
-	}
-
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		yield(es.RawEnvelope{}, fmt.Errorf("synapse/postgres: acquire: %w", err))
-		return
-	}
-	defer conn.Release()
-	defer func() { _, _ = conn.Exec(context.Background(), "UNLISTEN *") }()
-
-	if _, err := conn.Exec(ctx, "LISTEN "+notifyChannel); err != nil {
-		yield(es.RawEnvelope{}, fmt.Errorf("synapse/postgres: listen: %w", err))
-		return
+	if opts.Live {
+		s.startListener()
 	}
 
 	for {
@@ -325,7 +445,12 @@ func (s *Store) subscribeLoop(
 			return
 		}
 
-		next, stopped, err := s.readSince(ctx, conn, filterStream, from, yield)
+		var notify chan struct{}
+		if opts.Live {
+			notify = s.currentNotify()
+		}
+
+		next, stopped, err := s.readSince(ctx, filterStream, from, yield)
 		if stopped {
 			return
 		}
@@ -337,27 +462,15 @@ func (s *Store) subscribeLoop(
 			from = next
 		}
 
-		// Wait for notification. Use the raw pgx.Conn underneath the
-		// pgxpool.Conn; WaitForNotification blocks until the next NOTIFY
-		// on a LISTENed channel or ctx is canceled.
-		notif, err := conn.Conn().WaitForNotification(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				yield(es.RawEnvelope{}, ctx.Err())
-				return
-			}
-			yield(es.RawEnvelope{}, fmt.Errorf("synapse/postgres: wait notify: %w", err))
+		if !opts.Live {
 			return
 		}
 
-		// For per-stream subscribers, skip the SELECT entirely when
-		// the notification is for a different stream. The payload is
-		// advisory — a missed or malformed payload falls back to a
-		// SELECT, which is correct (just less efficient).
-		if filterStream != "" {
-			if notifStream, _, ok := parseNotifyPayload(notif.Payload); ok && notifStream != string(filterStream) {
-				continue
-			}
+		select {
+		case <-notify:
+		case <-ctx.Done():
+			yield(es.RawEnvelope{}, ctx.Err())
+			return
 		}
 	}
 }
@@ -367,7 +480,6 @@ func (s *Store) subscribeLoop(
 // cursor, whether the consumer broke out, and the first error.
 func (s *Store) readSince(
 	ctx context.Context,
-	q querier,
 	filterStream es.StreamID,
 	cursor uint64,
 	yield func(es.RawEnvelope, error) bool,
@@ -388,7 +500,7 @@ func (s *Store) readSince(
 		args = []any{string(filterStream), int64(cursor)}
 	}
 
-	rows, err := q.Query(ctx, query, args...)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return cursor, false, fmt.Errorf("synapse/postgres: subscribe query: %w", err)
 	}
@@ -413,21 +525,6 @@ func (s *Store) readSince(
 		return last, false, fmt.Errorf("synapse/postgres: subscribe rows: %w", err)
 	}
 	return last, false, nil
-}
-
-// parseNotifyPayload decodes a "<stream_id>:<max_global_position>"
-// payload. Returns ok=false on any format error so callers can fall
-// back to a full SELECT.
-func parseNotifyPayload(payload string) (stream string, pos uint64, ok bool) {
-	i := strings.LastIndexByte(payload, ':')
-	if i < 0 {
-		return "", 0, false
-	}
-	p, err := strconv.ParseUint(payload[i+1:], 10, 64)
-	if err != nil {
-		return "", 0, false
-	}
-	return payload[:i], p, true
 }
 
 func (s *Store) head(ctx context.Context, stream es.StreamID) (es.Revision, error) {
