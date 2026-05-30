@@ -17,12 +17,14 @@ import (
 // newStore builds a Store backed by a fresh file-based SQLite DB.
 // ":memory:" is per-connection in SQLite which breaks any test where
 // Append and Subscribe goroutines might get different connections; a
-// file-based DB plus WAL + busy_timeout pragmas let concurrent
-// readers and a single writer coexist without SQLITE_BUSY failures.
+// file-based DB plus WAL + busy_timeout + _txlock=immediate lets
+// concurrent readers and serialized writers coexist without
+// SQLITE_BUSY or SQLITE_BUSY_SNAPSHOT failures. See the package doc
+// for why _txlock matters under concurrent Append.
 func newStore(t *testing.T) *sqlitestore.Store {
 	t.Helper()
 	dsn := "file:" + filepath.Join(t.TempDir(), "events.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -65,7 +67,7 @@ func TestNew_WithoutMigrate(t *testing.T) {
 	// schema via some other tool first.
 	ctx := t.Context()
 	dsn := "file:" + filepath.Join(t.TempDir(), "noschema.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -96,7 +98,7 @@ func TestNew_WithoutMigrate(t *testing.T) {
 func TestMigrate_Idempotent(t *testing.T) {
 	ctx := t.Context()
 	dsn := "file:" + filepath.Join(t.TempDir(), "idem.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -114,7 +116,7 @@ func TestPersistence_AcrossStoreInstances(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	dsn := "file:" + filepath.Join(dir, "events.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	stream := es.StreamID("persist")
 
 	// Append via first instance.

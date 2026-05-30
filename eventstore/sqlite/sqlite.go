@@ -29,13 +29,27 @@
 // (or any driver compatible with the schema and the registered driver
 // name) and pass the *sql.DB to [New]:
 //
-//	db, err := sql.Open("sqlite", "file:events.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+//	db, err := sql.Open("sqlite",
+//	    "file:events.db?_pragma=journal_mode(WAL)"+
+//	    "&_pragma=busy_timeout(5000)"+
+//	    "&_txlock=immediate")
 //	store, err := sqlite.New(ctx, db)
 //
-// The WAL journal mode and a non-zero busy_timeout are strongly
-// recommended for concurrent workloads: WAL lets readers proceed
-// without blocking the writer, and busy_timeout makes the driver wait
-// for in-progress writes rather than failing with SQLITE_BUSY.
+// All three settings matter for a concurrent appender:
+//
+//   - journal_mode(WAL) lets readers proceed without blocking the
+//     writer.
+//   - busy_timeout(5000) makes the driver wait up to 5s for an
+//     in-progress writer rather than failing with SQLITE_BUSY.
+//   - _txlock=immediate makes every transaction begin as BEGIN
+//     IMMEDIATE rather than the database/sql default of BEGIN
+//     DEFERRED. This matters because Append's read-then-write
+//     pattern under BEGIN DEFERRED can race with another writer that
+//     committed after the read snapshot opened, producing
+//     SQLITE_BUSY_SNAPSHOT (517) — which busy_timeout cannot recover
+//     from. BEGIN IMMEDIATE acquires the writer lock at transaction
+//     start, so late writers wait for the lock and open a fresh
+//     snapshot when they get it.
 package sqlite
 
 import (

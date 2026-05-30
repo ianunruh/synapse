@@ -15,7 +15,7 @@ import (
 func newStoreB(b *testing.B) *sqlitestore.Store {
 	b.Helper()
 	dsn := "file:" + filepath.Join(b.TempDir(), "snapshots.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)

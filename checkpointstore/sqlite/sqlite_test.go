@@ -19,7 +19,7 @@ import (
 func newStore(t *testing.T) *sqlitestore.Store {
 	t.Helper()
 	dsn := "file:" + filepath.Join(t.TempDir(), "checkpoints.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -60,7 +60,7 @@ func TestNew_WithoutMigrate(t *testing.T) {
 	// schema externally first.
 	ctx := t.Context()
 	dsn := "file:" + filepath.Join(t.TempDir(), "noschema.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestNew_WithoutMigrate(t *testing.T) {
 func TestMigrate_Idempotent(t *testing.T) {
 	ctx := t.Context()
 	dsn := "file:" + filepath.Join(t.TempDir(), "idem.db") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

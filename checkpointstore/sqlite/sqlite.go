@@ -10,10 +10,14 @@
 // missing names; Reset deletes the row.
 //
 // The package blank-imports modernc.org/sqlite to register the
-// pure-Go driver. WAL + busy_timeout pragmas are strongly recommended
-// for concurrent workloads:
+// pure-Go driver. WAL + busy_timeout + _txlock=immediate are strongly
+// recommended for concurrent workloads (see the eventstore/sqlite
+// package doc for the full rationale on _txlock):
 //
-//	db, err := sql.Open("sqlite", "file:store.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+//	db, err := sql.Open("sqlite",
+//	    "file:store.db?_pragma=journal_mode(WAL)"+
+//	    "&_pragma=busy_timeout(5000)"+
+//	    "&_txlock=immediate")
 //	cps, err := sqlite.New(ctx, db)
 //
 // The checkpoint store may share the same *sql.DB and file with the
