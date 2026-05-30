@@ -3,7 +3,7 @@
 //
 //	HTTP request
 //	  └─ commandbus.Dispatch (Logging, Recover, Timeout middleware)
-//	       └─ es.Execute on a Repository wrapped in PerAggregateLocking
+//	       └─ es.Execute on a Repository wrapped in Retry + PerAggregateLocking
 //	            └─ Counter aggregate + memory event store
 //	                 └─ projection.Runner (live tail)
 //	                      └─ in-memory View
@@ -266,8 +266,15 @@ func main() {
 	store := memory.New()
 
 	// Repository — middleware here applies to load-handle-save (ADR-0012).
+	// Retry outside the lock so each attempt acquires a fresh lock; the
+	// default Retryable matches wraps of es.ErrConflict, so concurrent
+	// requests racing on the same stream are recovered transparently
+	// instead of bubbling 409s the user can't act on.
 	repo := es.NewRepository(store, reg, newCounter,
-		es.WithMiddleware(esmw.PerAggregateLocking()),
+		es.WithMiddleware(
+			esmw.Retry(esmw.RetryConfig{MaxAttempts: 5}),
+			esmw.PerAggregateLocking(),
+		),
 	)
 
 	// Bus — middleware here wraps Dispatch (ADR-0029). Recover before
