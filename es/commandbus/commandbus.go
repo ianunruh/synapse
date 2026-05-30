@@ -3,6 +3,7 @@ package commandbus
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/ianunruh/synapse/es"
@@ -23,9 +24,27 @@ type Command interface {
 // A Bus is safe for concurrent use. Registration is expected at startup;
 // [Bus.Dispatch] runs concurrently. See ADR-0028.
 type Bus struct {
-	mu      sync.RWMutex
-	entries map[string]entry
+	mu       sync.RWMutex
+	entries  map[string]entry
+	dispatch Operation // pre-built chain of middleware wrapping the core lookup
 }
+
+// Operation is the type-erased shape of [Bus.Dispatch]. It is what
+// [Middleware] wraps. See [WithMiddleware] and ADR-0029.
+type Operation func(ctx context.Context, name string, payload []byte) error
+
+// Middleware wraps an [Operation] to add behavior before, after, or
+// around dispatch — for example logging, panic recovery, or per-call
+// deadlines. Middlewares compose left-to-right as outer wrappers:
+// WithMiddleware(A, B, C) yields A wrapping B wrapping C wrapping the
+// core lookup. See ADR-0029.
+//
+// Bus middleware operates at the dispatch boundary
+// (ctx, name, []byte) and is orthogonal to [es.Middleware], which
+// operates at the aggregate boundary (ctx, [es.StreamID]) and lives on
+// the [es.Repository] (ADR-0012). The two compose without ever
+// double-wrapping.
+type Middleware func(next Operation) Operation
 
 // entry is the non-generic value stored in the map. The closure inside
 // captures the command and aggregate type parameters, the repository,
@@ -35,20 +54,49 @@ type entry struct {
 	run func(ctx context.Context, data []byte) error
 }
 
-type options struct{}
+type options struct {
+	middleware []Middleware
+}
 
-// Option configures a [Bus] at construction time. No options are defined
-// in v0; the variadic form is preserved per ADR-0016 so future options
-// can be added without breaking [New]'s signature.
+// Option configures a [Bus] at construction time.
 type Option func(*options)
 
-// New returns an empty [Bus] ready to be populated with [Register].
+// WithMiddleware installs bus-level middleware that wraps every
+// [Bus.Dispatch] call. Successive calls accumulate; middlewares compose
+// left-to-right as outer wrappers, matching [es.WithMiddleware]'s
+// convention (ADR-0012). See ADR-0029 for the built-ins and how bus
+// middleware composes with repository middleware.
+func WithMiddleware(mws ...Middleware) Option {
+	return func(o *options) { o.middleware = append(o.middleware, mws...) }
+}
+
+// New returns an empty [Bus] ready to be populated with [Register]. Any
+// middleware supplied via [WithMiddleware] is composed once here; per-
+// Dispatch work is one chain call.
 func New(opts ...Option) *Bus {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &Bus{entries: make(map[string]entry)}
+	b := &Bus{entries: make(map[string]entry)}
+	core := func(ctx context.Context, name string, payload []byte) error {
+		e, ok := b.lookup(name)
+		if !ok {
+			return &UnknownCommandError{Name: name}
+		}
+		return e.run(ctx, payload)
+	}
+	b.dispatch = chain(o.middleware, core)
+	return b
+}
+
+// chain wraps op with mws so that the leftmost middleware becomes the
+// outermost wrapper, matching [es.Middleware] composition (ADR-0012).
+func chain(mws []Middleware, op Operation) Operation {
+	for _, mw := range slices.Backward(mws) {
+		op = mw(op)
+	}
+	return op
 }
 
 // Register binds name to a typed handler. The command type C must
@@ -108,11 +156,7 @@ func Register[C Command, A es.Aggregate](
 //     verbatim so transports can classify them with [errors.Is] /
 //     [errors.As].
 func (b *Bus) Dispatch(ctx context.Context, name string, payload []byte) error {
-	e, ok := b.lookup(name)
-	if !ok {
-		return &UnknownCommandError{Name: name}
-	}
-	return e.run(ctx, payload)
+	return b.dispatch(ctx, name, payload)
 }
 
 // Names returns the command names currently registered, in unspecified

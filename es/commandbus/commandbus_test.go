@@ -231,6 +231,33 @@ func TestDispatch_MiddlewareAppliesUnderConcurrency(t *testing.T) {
 	}
 }
 
+func TestDispatch_MiddlewareCompositionOrder(t *testing.T) {
+	var log []string
+	mw := func(label string) commandbus.Middleware {
+		return func(next commandbus.Operation) commandbus.Operation {
+			return func(ctx context.Context, name string, payload []byte) error {
+				log = append(log, label+"-pre")
+				err := next(ctx, name, payload)
+				log = append(log, label+"-post")
+				return err
+			}
+		}
+	}
+
+	// Use the unknown-command path to exercise the chain without needing
+	// a real handler. The chain must still wrap the lookup failure.
+	bus := commandbus.New(commandbus.WithMiddleware(mw("A"), mw("B")))
+	err := bus.Dispatch(t.Context(), "missing", nil)
+	if !errors.Is(err, commandbus.ErrUnknownCommand) {
+		t.Errorf("err = %v, want ErrUnknownCommand", err)
+	}
+
+	want := []string{"A-pre", "B-pre", "B-post", "A-post"}
+	if !slices.Equal(log, want) {
+		t.Errorf("composition order = %v, want %v (A wraps B wraps core)", log, want)
+	}
+}
+
 func TestNames(t *testing.T) {
 	bus := commandbus.New()
 	repo := newRepo()

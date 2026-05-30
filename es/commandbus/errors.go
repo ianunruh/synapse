@@ -18,6 +18,12 @@ var ErrUnknownCommand = errors.New("synapse: command not registered")
 // to recover the underlying codec error.
 var ErrDecode = errors.New("synapse: command decode failed")
 
+// ErrPanic is the sentinel returned (via [PanicError]) when the
+// [Recover] middleware catches a panic from a handler or any layer
+// below it. Use [errors.Is] to classify the failure; use [errors.As]
+// with [*PanicError] to recover the recovered value and stack trace.
+var ErrPanic = errors.New("synapse: command handler panicked")
+
 // UnknownCommandError carries the offending name. It wraps
 // [ErrUnknownCommand].
 type UnknownCommandError struct {
@@ -43,3 +49,17 @@ func (e *DecodeError) Error() string {
 }
 
 func (e *DecodeError) Unwrap() []error { return []error{ErrDecode, e.Err} }
+
+// PanicError carries the command name, the recovered panic value, and
+// the stack trace captured at recovery time. It wraps [ErrPanic].
+type PanicError struct {
+	Name  string
+	Value any
+	Stack []byte
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("synapse: commandbus: panic in command %q: %v", e.Name, e.Value)
+}
+
+func (*PanicError) Unwrap() error { return ErrPanic }
