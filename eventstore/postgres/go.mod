@@ -8,8 +8,8 @@ replace (
 )
 
 require (
-	github.com/ianunruh/synapse v0.1.0
-	github.com/ianunruh/synapse/pgtest v0.1.0
+	github.com/ianunruh/synapse v0.1.1
+	github.com/ianunruh/synapse/pgtest v0.1.1
 	github.com/jackc/pgx/v5 v5.9.2
 )
 

@@ -3,7 +3,7 @@ module github.com/ianunruh/synapse/snapshotstore/sqlite
 go 1.26
 
 require (
-	github.com/ianunruh/synapse v0.1.0
+	github.com/ianunruh/synapse v0.1.1
 	modernc.org/sqlite v1.34.0
 )
 
