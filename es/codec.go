@@ -103,14 +103,17 @@ func (r *Registry) Types() []string {
 //
 //	es.Register(reg, "order.placed", json.For[OrderPlaced]())
 func Register[E any](r *Registry, eventType string, c TypedCodec[E]) {
-	r.Register(eventType, typedAdapter[E]{inner: c})
+	r.Register(eventType, typedAdapter[E]{eventType: eventType, inner: c})
 }
 
 // typedAdapter erases the payload type of a [TypedCodec] so it can be
 // stored as an [EventCodec]. The single type assertion in Marshal is
-// the only reflection-adjacent operation on the hot path.
+// the only reflection-adjacent operation on the hot path. eventType is
+// captured so [*PayloadTypeError] can report which registration the
+// mismatch came from.
 type typedAdapter[E any] struct {
-	inner TypedCodec[E]
+	eventType string
+	inner     TypedCodec[E]
 }
 
 func (a typedAdapter[E]) ContentType() ContentType {
@@ -121,8 +124,9 @@ func (a typedAdapter[E]) Marshal(payload any) ([]byte, error) {
 	e, ok := payload.(E)
 	if !ok {
 		return nil, &PayloadTypeError{
-			Expected: reflect.TypeFor[E]().String(),
-			Got:      fmt.Sprintf("%T", payload),
+			EventType: a.eventType,
+			Expected:  reflect.TypeFor[E]().String(),
+			Got:       fmt.Sprintf("%T", payload),
 		}
 	}
 	return a.inner.Marshal(e)

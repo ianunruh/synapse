@@ -43,7 +43,7 @@ var Schema string
 // NOT EXISTS), so repeated calls are safe.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, Schema); err != nil {
-		return fmt.Errorf("synapse/checkpointstore/sqlite: migrate: %w", err)
+		return fmt.Errorf("synapse: migrate: %w", err)
 	}
 	return nil
 }
@@ -96,7 +96,7 @@ func (s *Store) Save(ctx context.Context, name string, position uint64) error {
 		name, int64(position),
 	)
 	if err != nil {
-		return fmt.Errorf("synapse/checkpointstore/sqlite: save: %w", err)
+		return fmt.Errorf("synapse: save: %w", err)
 	}
 	return nil
 }
@@ -116,7 +116,7 @@ func (s *Store) Load(ctx context.Context, name string) (uint64, bool, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, false, nil
 		}
-		return 0, false, fmt.Errorf("synapse/checkpointstore/sqlite: load: %w", err)
+		return 0, false, fmt.Errorf("synapse: load: %w", err)
 	}
 	return uint64(position), true, nil
 }
@@ -131,7 +131,7 @@ func (s *Store) Reset(ctx context.Context, name string) error {
 		name,
 	)
 	if err != nil {
-		return fmt.Errorf("synapse/checkpointstore/sqlite: reset: %w", err)
+		return fmt.Errorf("synapse: reset: %w", err)
 	}
 	return nil
 }

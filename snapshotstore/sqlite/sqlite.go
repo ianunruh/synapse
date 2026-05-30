@@ -52,7 +52,7 @@ var Schema string
 // NOT EXISTS), so repeated calls are safe.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, Schema); err != nil {
-		return fmt.Errorf("synapse/snapshotstore/sqlite: migrate: %w", err)
+		return fmt.Errorf("synapse: migrate: %w", err)
 	}
 	return nil
 }
@@ -107,7 +107,7 @@ func (s *Store) Save(ctx context.Context, snap es.RawSnapshot) error {
 	if len(snap.Metadata) > 0 {
 		b, err := json.Marshal(snap.Metadata)
 		if err != nil {
-			return fmt.Errorf("synapse/snapshotstore/sqlite: marshal metadata: %w", err)
+			return fmt.Errorf("synapse: marshal metadata: %w", err)
 		}
 		metadataJSON = string(b)
 	}
@@ -132,7 +132,7 @@ func (s *Store) Save(ctx context.Context, snap es.RawSnapshot) error {
 		snap.Payload,
 	)
 	if err != nil {
-		return fmt.Errorf("synapse/snapshotstore/sqlite: save: %w", err)
+		return fmt.Errorf("synapse: save: %w", err)
 	}
 	return nil
 }
@@ -161,14 +161,14 @@ func (s *Store) Latest(ctx context.Context, stream es.StreamID) (es.RawSnapshot,
 		if errors.Is(err, sql.ErrNoRows) {
 			return es.RawSnapshot{}, false, nil
 		}
-		return es.RawSnapshot{}, false, fmt.Errorf("synapse/snapshotstore/sqlite: latest: %w", err)
+		return es.RawSnapshot{}, false, fmt.Errorf("synapse: latest: %w", err)
 	}
 
 	var metadata es.Metadata
 	if metadataJSON != "" && metadataJSON != "{}" {
 		metadata = make(es.Metadata)
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
-			return es.RawSnapshot{}, false, fmt.Errorf("synapse/snapshotstore/sqlite: unmarshal metadata: %w", err)
+			return es.RawSnapshot{}, false, fmt.Errorf("synapse: unmarshal metadata: %w", err)
 		}
 	}
 

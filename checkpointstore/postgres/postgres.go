@@ -29,7 +29,7 @@ var Schema string
 // Migrate applies [Schema] to the pool. Idempotent.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, Schema); err != nil {
-		return fmt.Errorf("synapse/checkpointstore/postgres: migrate: %w", err)
+		return fmt.Errorf("synapse: migrate: %w", err)
 	}
 	return nil
 }
@@ -79,7 +79,7 @@ func (s *Store) Save(ctx context.Context, name string, position uint64) error {
 		name, int64(position),
 	)
 	if err != nil {
-		return fmt.Errorf("synapse/checkpointstore/postgres: save: %w", err)
+		return fmt.Errorf("synapse: save: %w", err)
 	}
 	return nil
 }
@@ -99,7 +99,7 @@ func (s *Store) Load(ctx context.Context, name string) (uint64, bool, error) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, false, nil
 		}
-		return 0, false, fmt.Errorf("synapse/checkpointstore/postgres: load: %w", err)
+		return 0, false, fmt.Errorf("synapse: load: %w", err)
 	}
 	return uint64(position), true, nil
 }
@@ -114,7 +114,7 @@ func (s *Store) Reset(ctx context.Context, name string) error {
 		name,
 	)
 	if err != nil {
-		return fmt.Errorf("synapse/checkpointstore/postgres: reset: %w", err)
+		return fmt.Errorf("synapse: reset: %w", err)
 	}
 	return nil
 }

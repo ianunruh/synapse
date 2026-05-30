@@ -75,7 +75,7 @@ const appendLockKey int64 = 0x73796E61707365 // "synapse"
 // Migrate applies [Schema] to the pool. Idempotent.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, Schema); err != nil {
-		return fmt.Errorf("synapse/postgres: migrate: %w", err)
+		return fmt.Errorf("synapse: migrate: %w", err)
 	}
 	return nil
 }
@@ -273,12 +273,12 @@ func (s *Store) Append(
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/postgres: begin: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", appendLockKey); err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/postgres: advisory lock: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: advisory lock: %w", err)
 	}
 
 	var current int64
@@ -287,7 +287,7 @@ func (s *Store) Append(
 		string(stream),
 	).Scan(&current)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/postgres: query head: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: query head: %w", err)
 	}
 	currentU := uint64(current)
 
@@ -301,7 +301,7 @@ func (s *Store) Append(
 		if len(ev.Metadata) > 0 {
 			metadataJSON, err = json.Marshal(ev.Metadata)
 			if err != nil {
-				return es.Revision{}, fmt.Errorf("synapse/postgres: marshal metadata: %w", err)
+				return es.Revision{}, fmt.Errorf("synapse: marshal metadata: %w", err)
 			}
 		}
 
@@ -331,18 +331,18 @@ func (s *Store) Append(
 					Actual:   es.Exact(currentU + uint64(i)),
 				}
 			}
-			return es.Revision{}, fmt.Errorf("synapse/postgres: insert v%d: %w", version, err)
+			return es.Revision{}, fmt.Errorf("synapse: insert v%d: %w", version, err)
 		}
 		maxGlobalPos = globalPos
 	}
 
 	payload := fmt.Sprintf("%s:%d", string(stream), maxGlobalPos)
 	if _, err := tx.Exec(ctx, "SELECT pg_notify($1, $2)", notifyChannel, payload); err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/postgres: notify: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: notify: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/postgres: commit: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: commit: %w", err)
 	}
 
 	return es.Exact(currentU + uint64(len(events))), nil
@@ -376,7 +376,7 @@ func (s *Store) Load(
 
 		rows, err := s.pool.Query(ctx, query, args...)
 		if err != nil {
-			yield(es.RawEnvelope{}, fmt.Errorf("synapse/postgres: load query: %w", err))
+			yield(es.RawEnvelope{}, fmt.Errorf("synapse: load query: %w", err))
 			return
 		}
 		defer rows.Close()
@@ -396,7 +396,7 @@ func (s *Store) Load(
 			}
 		}
 		if err := rows.Err(); err != nil {
-			yield(es.RawEnvelope{}, fmt.Errorf("synapse/postgres: load rows: %w", err))
+			yield(es.RawEnvelope{}, fmt.Errorf("synapse: load rows: %w", err))
 		}
 	}
 }
@@ -510,7 +510,7 @@ func (s *Store) readSince(
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return cursor, false, fmt.Errorf("synapse/postgres: subscribe query: %w", err)
+		return cursor, false, fmt.Errorf("synapse: subscribe query: %w", err)
 	}
 	defer rows.Close()
 
@@ -530,7 +530,7 @@ func (s *Store) readSince(
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return last, false, fmt.Errorf("synapse/postgres: subscribe rows: %w", err)
+		return last, false, fmt.Errorf("synapse: subscribe rows: %w", err)
 	}
 	return last, false, nil
 }
@@ -542,7 +542,7 @@ func (s *Store) head(ctx context.Context, stream es.StreamID) (es.Revision, erro
 		string(stream),
 	).Scan(&current)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/postgres: query head: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: query head: %w", err)
 	}
 	return es.Exact(uint64(current)), nil
 }
@@ -590,14 +590,14 @@ func scanEvent(rows pgx.Rows) (es.RawEnvelope, error) {
 		&globalPos, &eventID, &streamID, &version, &eventType, &contentType,
 		&recordedAt, &causation, &correlation, &metadataJSON, &payload,
 	); err != nil {
-		return es.RawEnvelope{}, fmt.Errorf("synapse/postgres: scan: %w", err)
+		return es.RawEnvelope{}, fmt.Errorf("synapse: scan: %w", err)
 	}
 
 	var metadata es.Metadata
 	if metadataJSON != "" && metadataJSON != "{}" {
 		metadata = make(es.Metadata)
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
-			return es.RawEnvelope{}, fmt.Errorf("synapse/postgres: unmarshal metadata: %w", err)
+			return es.RawEnvelope{}, fmt.Errorf("synapse: unmarshal metadata: %w", err)
 		}
 	}
 

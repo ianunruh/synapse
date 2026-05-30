@@ -198,7 +198,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.checkpoint != nil {
 		pos, found, err := r.checkpoint.Load(ctx, r.name)
 		if err != nil {
-			return fmt.Errorf("synapse/projection: load checkpoint %q: %w", r.name, err)
+			return fmt.Errorf("load checkpoint %q: %w", r.name, err)
 		}
 		if found {
 			from = pos
@@ -263,7 +263,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			sinceSave++
 			if sinceSave >= r.checkpointEvery {
 				if err := r.checkpoint.Save(ctx, r.name, pos); err != nil {
-					return fmt.Errorf("synapse/projection: save checkpoint %q at pos %d: %w",
+					return fmt.Errorf("save checkpoint %q at pos %d: %w",
 						r.name, pos, err)
 				}
 				sinceSave, havePending = 0, false
@@ -277,7 +277,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// stop up to checkpointEvery-1 events are redelivered next run.
 	if r.checkpoint != nil && havePending {
 		if err := r.checkpoint.Save(ctx, r.name, pendingPos); err != nil {
-			return fmt.Errorf("synapse/projection: save checkpoint %q at pos %d: %w",
+			return fmt.Errorf("synapse: save checkpoint %q at pos %d: %w",
 				r.name, pendingPos, err)
 		}
 	}
@@ -291,12 +291,12 @@ func (r *Runner) decode(raw es.RawEnvelope) (es.Envelope, error) {
 	}
 	payload, err := codec.Unmarshal(raw.Payload)
 	if err != nil {
-		return es.Envelope{}, fmt.Errorf("synapse/projection: unmarshal %s at pos=%d: %w",
+		return es.Envelope{}, fmt.Errorf("synapse: unmarshal %s at pos=%d: %w",
 			raw.Type, raw.GlobalPosition, err)
 	}
 	payload, finalType, err := r.reg.Upcast(payload, raw.Type)
 	if err != nil {
-		return es.Envelope{}, fmt.Errorf("synapse/projection: upcast %s at pos=%d: %w",
+		return es.Envelope{}, fmt.Errorf("synapse: upcast %s at pos=%d: %w",
 			raw.Type, raw.GlobalPosition, err)
 	}
 	return es.Envelope{

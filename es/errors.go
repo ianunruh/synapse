@@ -34,6 +34,17 @@ var (
 	// ErrPayloadType indicates a codec received a payload that did
 	// not match the type it was registered for.
 	ErrPayloadType = errors.New("synapse: payload type mismatch")
+
+	// ErrUpcasterType indicates a registered upcaster received a
+	// payload whose dynamic type did not match the In type it was
+	// registered with. Detailed information is available on
+	// [*UpcasterTypeError].
+	ErrUpcasterType = errors.New("synapse: upcaster payload type mismatch")
+
+	// ErrUpcasterCycle indicates the registered upcasters form a cycle
+	// or exceed the per-call hop limit. Detailed information is
+	// available on [*UpcasterCycleError].
+	ErrUpcasterCycle = errors.New("synapse: upcaster cycle")
 )
 
 // ConflictError reports an optimistic-concurrency violation. It

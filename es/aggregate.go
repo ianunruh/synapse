@@ -47,7 +47,9 @@ type Aggregate interface {
 	SetVersion(v uint64)
 
 	// Pending returns the events that have been recorded but not yet
-	// persisted. The slice is read-only from the caller's perspective.
+	// persisted. The returned slice is owned by the aggregate; callers
+	// must not append to it or mutate its elements. The [Repository]
+	// reads it during Save and then calls [Aggregate.ClearPending].
 	Pending() []Envelope
 
 	// ClearPending discards the recorded-but-unpersisted events. The

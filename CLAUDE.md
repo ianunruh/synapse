@@ -50,6 +50,9 @@ Run modernize on both the root and any modified sibling modules before committin
 
 ## Conventions worth remembering
 
-- Error message strings use the `"synapse:"` brand prefix, not `"es:"`. Mirrors `net/http` returning `"http:"`. See ADR-0002.
+- **Error message brand prefix.** One brand: `"synapse:"`. No sub-paths (no `"synapse/postgres:"`, `"synapse/sqlite:"`, etc.) — mirrors `net/http`'s `"http:"`, not `crypto/rand`'s `"crypto/rand:"`. See ADR-0002.
+  - **Apply the prefix at two places only:** (1) leaf errors (`errors.New("synapse: ...")`, the originating `fmt.Errorf`), and (2) wraps where `%w` wraps an error from *outside* synapse — a third-party library (`pgx`, `pgxpool`, `database/sql`, `encoding/json`, `google.golang.org/protobuf`, OS errors). Those wraps are effectively new synapse-layer error messages.
+  - **Drop the prefix at internal wraps** — anywhere `fmt.Errorf("... %w", err)` wraps an already-branded synapse error (anything returned from another `es.*` function, sibling store, sibling codec). The brand is already in the chain; adding another produces `"synapse: ... synapse: ..."` noise. Just describe the operation: `fmt.Errorf("load checkpoint %q: %w", name, err)`.
+  - Rule of thumb when reviewing a new `fmt.Errorf`: trace the `%w` argument. Third-party origin → brand it. Synapse origin → no brand.
 - The root `synapse` package is doc-only — do not add re-exports there. See ADR-0002.
 - New significant decisions get a numbered ADR under `docs/adr/`. Keep them short (Context / Decision / Consequences / Alternatives), and cross-link related ADRs.

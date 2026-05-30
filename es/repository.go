@@ -151,7 +151,7 @@ func (r *Repository[A]) Load(ctx context.Context, id StreamID) (A, error) {
 		if snapper, ok := any(agg).(Snapshotter); ok {
 			snap, found, err := r.snapStore.Latest(ctx, id)
 			if err != nil {
-				return zero, fmt.Errorf("synapse: snapshot load: %w", err)
+				return zero, fmt.Errorf("snapshot load: %w", err)
 			}
 			if found {
 				c, ok := r.reg.Lookup(snap.Type)

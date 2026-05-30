@@ -123,6 +123,8 @@ func (e *UpcasterTypeError) Error() string {
 		e.FromType, e.Expected, e.Got)
 }
 
+func (*UpcasterTypeError) Unwrap() error { return ErrUpcasterType }
+
 // UpcasterCycleError is returned when the registered upcasters form
 // a cycle or when [upcastMaxHops] is exceeded. Chain is the sequence
 // of type names traversed, with the repeating type appended for
@@ -135,3 +137,5 @@ func (e *UpcasterCycleError) Error() string {
 	return fmt.Sprintf("synapse: upcaster cycle: %s",
 		strings.Join(e.Chain, " -> "))
 }
+
+func (*UpcasterCycleError) Unwrap() error { return ErrUpcasterCycle }

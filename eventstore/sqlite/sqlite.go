@@ -69,7 +69,7 @@ var Schema string
 // NOT EXISTS), so repeated calls are safe.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, Schema); err != nil {
-		return fmt.Errorf("synapse/sqlite: migrate: %w", err)
+		return fmt.Errorf("synapse: migrate: %w", err)
 	}
 	return nil
 }
@@ -141,7 +141,7 @@ func (s *Store) Append(
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/sqlite: begin: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: begin: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // commit path returns the meaningful error
 
@@ -151,7 +151,7 @@ func (s *Store) Append(
 		string(stream),
 	).Scan(&current)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/sqlite: query head: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: query head: %w", err)
 	}
 	currentU := uint64(current)
 
@@ -164,7 +164,7 @@ func (s *Store) Append(
 			(event_id, stream_id, version, type, content_type, recorded_at, causation, correlation, metadata, payload)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/sqlite: prepare insert: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: prepare insert: %w", err)
 	}
 	defer stmt.Close()
 
@@ -173,7 +173,7 @@ func (s *Store) Append(
 		if len(ev.Metadata) > 0 {
 			b, err := json.Marshal(ev.Metadata)
 			if err != nil {
-				return es.Revision{}, fmt.Errorf("synapse/sqlite: marshal metadata: %w", err)
+				return es.Revision{}, fmt.Errorf("synapse: marshal metadata: %w", err)
 			}
 			metadataJSON = string(b)
 		}
@@ -199,7 +199,7 @@ func (s *Store) Append(
 					Actual:   es.Exact(currentU + uint64(i)),
 				}
 			}
-			return es.Revision{}, fmt.Errorf("synapse/sqlite: insert v%d: %w", version, err)
+			return es.Revision{}, fmt.Errorf("synapse: insert v%d: %w", version, err)
 		}
 	}
 
@@ -211,7 +211,7 @@ func (s *Store) Append(
 				Actual:   es.Exact(currentU),
 			}
 		}
-		return es.Revision{}, fmt.Errorf("synapse/sqlite: commit: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: commit: %w", err)
 	}
 
 	s.broadcast()
@@ -247,7 +247,7 @@ func (s *Store) Load(
 
 		rows, err := s.db.QueryContext(ctx, query, args...)
 		if err != nil {
-			yield(es.RawEnvelope{}, fmt.Errorf("synapse/sqlite: load query: %w", err))
+			yield(es.RawEnvelope{}, fmt.Errorf("synapse: load query: %w", err))
 			return
 		}
 		defer rows.Close()
@@ -267,7 +267,7 @@ func (s *Store) Load(
 			}
 		}
 		if err := rows.Err(); err != nil {
-			yield(es.RawEnvelope{}, fmt.Errorf("synapse/sqlite: load rows: %w", err))
+			yield(es.RawEnvelope{}, fmt.Errorf("synapse: load rows: %w", err))
 		}
 	}
 }
@@ -367,7 +367,7 @@ func (s *Store) readGlobal(
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("synapse/sqlite: subscribe query: %w", err)
+		return 0, fmt.Errorf("synapse: subscribe query: %w", err)
 	}
 	defer rows.Close()
 
@@ -383,7 +383,7 @@ func (s *Store) readGlobal(
 		last = env.GlobalPosition
 	}
 	if err := rows.Err(); err != nil {
-		return last, fmt.Errorf("synapse/sqlite: subscribe rows: %w", err)
+		return last, fmt.Errorf("synapse: subscribe rows: %w", err)
 	}
 	return last, nil
 }
@@ -404,7 +404,7 @@ func (s *Store) readStream(
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("synapse/sqlite: subscribe-stream query: %w", err)
+		return 0, fmt.Errorf("synapse: subscribe-stream query: %w", err)
 	}
 	defer rows.Close()
 
@@ -420,7 +420,7 @@ func (s *Store) readStream(
 		last = env.Version
 	}
 	if err := rows.Err(); err != nil {
-		return last, fmt.Errorf("synapse/sqlite: subscribe-stream rows: %w", err)
+		return last, fmt.Errorf("synapse: subscribe-stream rows: %w", err)
 	}
 	return last, nil
 }
@@ -451,7 +451,7 @@ func (s *Store) head(ctx context.Context, stream es.StreamID) (es.Revision, erro
 		string(stream),
 	).Scan(&current)
 	if err != nil {
-		return es.Revision{}, fmt.Errorf("synapse/sqlite: query head: %w", err)
+		return es.Revision{}, fmt.Errorf("synapse: query head: %w", err)
 	}
 	return es.Exact(uint64(current)), nil
 }
@@ -511,14 +511,14 @@ func scanEvent(rows *sql.Rows) (es.RawEnvelope, error) {
 		&globalPos, &eventID, &streamID, &version, &eventType, &contentType,
 		&recordedAtNano, &causation, &correlation, &metadataJSON, &payload,
 	); err != nil {
-		return es.RawEnvelope{}, fmt.Errorf("synapse/sqlite: scan: %w", err)
+		return es.RawEnvelope{}, fmt.Errorf("synapse: scan: %w", err)
 	}
 
 	var metadata es.Metadata
 	if metadataJSON != "" && metadataJSON != "{}" {
 		metadata = make(es.Metadata)
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
-			return es.RawEnvelope{}, fmt.Errorf("synapse/sqlite: unmarshal metadata: %w", err)
+			return es.RawEnvelope{}, fmt.Errorf("synapse: unmarshal metadata: %w", err)
 		}
 	}
 

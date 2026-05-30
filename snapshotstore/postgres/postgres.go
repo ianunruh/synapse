@@ -35,7 +35,7 @@ var Schema string
 // Migrate applies [Schema] to the pool. Idempotent.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, Schema); err != nil {
-		return fmt.Errorf("synapse/snapshotstore/postgres: migrate: %w", err)
+		return fmt.Errorf("synapse: migrate: %w", err)
 	}
 	return nil
 }
@@ -84,7 +84,7 @@ func (s *Store) Save(ctx context.Context, snap es.RawSnapshot) error {
 	if len(snap.Metadata) > 0 {
 		b, err := json.Marshal(snap.Metadata)
 		if err != nil {
-			return fmt.Errorf("synapse/snapshotstore/postgres: marshal metadata: %w", err)
+			return fmt.Errorf("synapse: marshal metadata: %w", err)
 		}
 		metadataJSON = b
 	}
@@ -109,7 +109,7 @@ func (s *Store) Save(ctx context.Context, snap es.RawSnapshot) error {
 		snap.Payload,
 	)
 	if err != nil {
-		return fmt.Errorf("synapse/snapshotstore/postgres: save: %w", err)
+		return fmt.Errorf("synapse: save: %w", err)
 	}
 	return nil
 }
@@ -138,14 +138,14 @@ func (s *Store) Latest(ctx context.Context, stream es.StreamID) (es.RawSnapshot,
 		if errors.Is(err, pgx.ErrNoRows) {
 			return es.RawSnapshot{}, false, nil
 		}
-		return es.RawSnapshot{}, false, fmt.Errorf("synapse/snapshotstore/postgres: latest: %w", err)
+		return es.RawSnapshot{}, false, fmt.Errorf("synapse: latest: %w", err)
 	}
 
 	var metadata es.Metadata
 	if metadataJSON != "" && metadataJSON != "{}" {
 		metadata = make(es.Metadata)
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
-			return es.RawSnapshot{}, false, fmt.Errorf("synapse/snapshotstore/postgres: unmarshal metadata: %w", err)
+			return es.RawSnapshot{}, false, fmt.Errorf("synapse: unmarshal metadata: %w", err)
 		}
 	}
 
