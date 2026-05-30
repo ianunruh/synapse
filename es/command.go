@@ -2,6 +2,7 @@ package es
 
 import (
 	"context"
+	"errors"
 	"slices"
 )
 
@@ -52,9 +53,11 @@ func chain(mws []Middleware, op Operation) Operation {
 // chain (see [WithMiddleware]), so cross-cutting concerns such as
 // locking and retries apply uniformly across all command types.
 //
-// If the stream does not yet exist, Execute returns
-// *[StreamNotFoundError]. For "load or create" semantics, construct
-// an aggregate directly via the Repository's newFn and call Save.
+// If the stream does not yet exist, Execute calls the handler with a
+// fresh aggregate built by the Repository's newFn — Save then appends
+// with expected revision [NoStream], which is the natural shape for a
+// create-style command. Handlers that require an existing aggregate
+// should guard on agg.Version() and return an error. See ADR-0030.
 //
 // If the handler returns a non-nil error, Execute propagates it
 // without attempting to save.
@@ -68,7 +71,10 @@ func Execute[C any, A Aggregate](
 	op := func(ctx context.Context, stream StreamID) error {
 		agg, err := r.Load(ctx, stream)
 		if err != nil {
-			return err
+			if !errors.Is(err, ErrStreamNotFound) {
+				return err
+			}
+			agg = r.newFn(stream)
 		}
 		if err := h(ctx, cmd, agg); err != nil {
 			return err

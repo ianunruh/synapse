@@ -279,14 +279,23 @@ func TestExecute_LoadHandleSave(t *testing.T) {
 	}
 }
 
-func TestExecute_StreamNotFound_Propagates(t *testing.T) {
+func TestExecute_OnMissingStream_CreatesFreshAggregate(t *testing.T) {
+	// Execute treats StreamNotFound from Load as "start fresh," so a
+	// command can create the aggregate on first dispatch (ADR-0030).
 	ctx := t.Context()
 	repo := es.NewRepository(memory.New(), testdomain.NewRegistry(), testdomain.NewCounter)
 
-	err := es.Execute(ctx, repo, testdomain.CounterStream,
-		testdomain.IncrementCmd{By: 1}, testdomain.IncrementHandler)
-	if !errors.Is(err, es.ErrStreamNotFound) {
-		t.Errorf("err = %v, want wrap of ErrStreamNotFound", err)
+	if err := es.Execute(ctx, repo, testdomain.CounterStream,
+		testdomain.IncrementCmd{By: 5}, testdomain.IncrementHandler); err != nil {
+		t.Fatalf("Execute on missing stream: %v", err)
+	}
+	c, err := repo.Load(ctx, testdomain.CounterStream)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Count != 5 || c.Version() != 1 {
+		t.Errorf("after create-via-command: Count=%d Version=%d, want 5, 1",
+			c.Count, c.Version())
 	}
 }
 
