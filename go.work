@@ -8,6 +8,7 @@ use (
 	./eventstore/postgres
 	./eventstore/sqlite
 	./examples/persistent
+	./examples/postgres
 	./pgtest
 	./snapshotstore/postgres
 	./snapshotstore/sqlite
