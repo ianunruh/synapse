@@ -10,5 +10,6 @@ CREATE TABLE IF NOT EXISTS events (
     correlation     TEXT        NOT NULL DEFAULT '',
     metadata        JSONB       NOT NULL DEFAULT '{}'::jsonb,
     payload         BYTEA       NOT NULL,
+    xid             xid8        NOT NULL DEFAULT pg_current_xact_id(),
     UNIQUE (stream_id, version)
 );

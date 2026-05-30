@@ -15,12 +15,15 @@
 //
 // Concurrency model:
 //
-//   - Append acquires a transaction-scoped advisory lock so all
-//     appends serialize on a single global lock. This guarantees that
-//     BIGSERIAL global_position values commit in monotonic order, so
-//     subscribers never see a position N before position N-1 commits.
-//     The cost is that concurrent appends queue rather than parallelize;
-//     in v0 this is a deliberate simplicity-vs-throughput trade.
+//   - Append runs in parallel: no global serialization lock. Each event
+//     row records the writing transaction's xid (via DEFAULT
+//     pg_current_xact_id()); global-path subscribers filter with
+//     pg_snapshot_xmin so they only see rows whose transactions have
+//     definitely committed. Per-stream conflicts are handled by
+//     UNIQUE(stream_id, version) → *es.ConflictError. The cost is
+//     subscriber latency bounded by the oldest in-flight transaction;
+//     operators should configure idle_in_transaction_session_timeout.
+//     See ADR-0031.
 //   - Append emits a NOTIFY on the channel "synapse_events" inside the
 //     same transaction, so the wake-up fires at COMMIT.
 //   - A single shared goroutine per Store holds one connection running
@@ -64,13 +67,6 @@ var Schema string
 // [Store]. It is fixed at v0; configurability can be layered on later
 // without breaking existing deployments.
 const notifyChannel = "synapse_events"
-
-// appendLockKey is the bigint key used with pg_advisory_xact_lock for
-// the global Append serialization lock. The value is the first eight
-// bytes of "synapse" in ASCII, padded — any constant works, but
-// keeping it stable across versions matters so two synapse-using
-// services don't collide on a single Postgres cluster.
-const appendLockKey int64 = 0x73796E61707365 // "synapse"
 
 // Migrate applies [Schema] to the pool. Idempotent.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
@@ -253,10 +249,13 @@ func (s *Store) broadcast() {
 
 // Append implements [es.EventStore].
 //
-// The flow inside one transaction: acquire the global advisory lock,
-// SELECT the current head version for the stream, validate against
-// expected, INSERT events with their per-stream versions, NOTIFY with
-// the new max global_position, COMMIT.
+// The flow inside one transaction: SELECT the current head version for
+// the stream, validate against expected, INSERT events with their
+// per-stream versions (the xid column is populated by DEFAULT), NOTIFY
+// with the new max global_position, COMMIT. Concurrent appends to
+// different streams run in parallel; concurrent appends to the same
+// stream race on UNIQUE(stream_id, version) and the loser receives
+// *[es.ConflictError]. See ADR-0031.
 func (s *Store) Append(
 	ctx context.Context,
 	stream es.StreamID,
@@ -276,10 +275,6 @@ func (s *Store) Append(
 		return es.Revision{}, fmt.Errorf("synapse: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", appendLockKey); err != nil {
-		return es.Revision{}, fmt.Errorf("synapse: advisory lock: %w", err)
-	}
 
 	var current int64
 	err = tx.QueryRow(ctx,
@@ -491,7 +486,12 @@ func (s *Store) readSince(
 		args  []any
 	)
 	if filterStream == "" {
-		where = "global_position > $1"
+		// The xid guard is the global-path side of the parallel-writer
+		// design (ADR-0031): only rows whose writing transaction has
+		// already committed by the start of this statement are visible.
+		// Per-stream reads are naturally safe via UNIQUE(stream_id,
+		// version), so the guard is unnecessary on that branch.
+		where = "global_position > $1 AND xid < pg_snapshot_xmin(pg_current_snapshot())"
 		order = "global_position"
 		args = []any{int64(cursor)}
 	} else {

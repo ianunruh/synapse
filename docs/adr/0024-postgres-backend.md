@@ -25,6 +25,14 @@ Key implementation choices:
 
 ### Append: global advisory lock + `RETURNING global_position` + transactional `NOTIFY`
 
+> **Superseded by [ADR-0031](0031-postgres-parallel-append.md).** The
+> global advisory lock described here was replaced by a safe-high-water-
+> mark filter on the subscriber side: each event row records its
+> writer's xid (`pg_current_xact_id()`), and global-path subscribers
+> filter with `AND xid < pg_snapshot_xmin(pg_current_snapshot())`. The
+> rest of this section (RETURNING global_position, transactional NOTIFY,
+> UNIQUE-as-second-line-of-defense) still stands.
+
 Every `Append` runs inside one transaction:
 
 1. `SELECT pg_advisory_xact_lock(<constant>)` to serialize the assignment of `global_position` across all writers.
