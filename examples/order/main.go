@@ -7,6 +7,8 @@
 //   - Command methods that validate preconditions before recording an
 //     event, so invalid transitions never reach the event log.
 //   - LineItem value objects with Money arithmetic.
+//   - A SalesView projection running off the same event store,
+//     tracking delivered revenue and order counts as a read model.
 //
 // Two streams are exercised to show both branches of the lifecycle:
 // one runs the happy path through delivery, one is canceled after a
@@ -23,6 +25,7 @@ import (
 	"log"
 
 	"github.com/ianunruh/synapse/es"
+	"github.com/ianunruh/synapse/es/projection"
 	"github.com/ianunruh/synapse/eventstore/memory"
 	snapmem "github.com/ianunruh/synapse/snapshotstore/memory"
 )
@@ -31,7 +34,8 @@ func main() {
 	ctx := context.Background()
 
 	events := memory.New()
-	repo := es.NewRepository(events, newRegistry(), NewOrder,
+	reg := newRegistry()
+	repo := es.NewRepository(events, reg, NewOrder,
 		es.WithSnapshotStore(snapmem.New()),
 		es.WithSnapshotPolicy(es.EveryNVersions(5)))
 
@@ -40,6 +44,17 @@ func main() {
 	canceledPath(ctx, repo)
 	fmt.Println()
 	showEventLog(ctx, events, "order/alice")
+	fmt.Println()
+
+	// Drain a projection over the events we just wrote. Non-Live, so
+	// the runner returns when the event log is exhausted. The view's
+	// final state is what a downstream read model would expose.
+	view := newSalesView()
+	runner := projection.NewRunner("sales-view", events, reg, view)
+	if err := runner.Run(ctx); err != nil {
+		log.Fatalf("projection: %v", err)
+	}
+	view.print()
 }
 
 func happyPath(ctx context.Context, repo *es.Repository[*Order]) {
