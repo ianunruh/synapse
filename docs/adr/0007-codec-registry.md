@@ -13,7 +13,7 @@ The core must stay serialization-agnostic so users can pick JSON, protobuf, Mess
 - `EventCodec` is the erased interface: `ContentType()`, `Marshal(any) ([]byte, error)`, `Unmarshal([]byte) (any, error)`.
 - `TypedCodec[E]` is the strongly typed counterpart: `Marshal(E)`, `Unmarshal([]byte) (E, error)`. Codec subpackages expose `For[E]() TypedCodec[E]` constructors.
 - A generic top-level `Register[E](r *Registry, eventType string, c TypedCodec[E])` adapts a `TypedCodec[E]` into an `EventCodec` via a small `typedAdapter[E]` value. The single type assertion in `Marshal` is the only reflection-adjacent operation on the hot path.
-- Concrete codecs (`synapse/codec/json`, future `synapse/codec/proto`) live in subpackages so the core has no third-party deps.
+- Concrete codecs (`synapse/codec/json`, `synapse/codec/proto`) live in subpackages so the core has no third-party deps. The protobuf codec was added in [ADR-0026](0026-proto-codec-and-contract.md), which also introduced the `codec/codectest` contract suite.
 
 ## Consequences
 

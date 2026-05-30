@@ -2,6 +2,7 @@
 
 **Status:** Accepted (2026-05-28)
 **Relates to:** [ADR-0004 Aggregate model](0004-aggregate-model.md), [ADR-0008 Event store and streaming](0008-event-store-and-streaming.md)
+**Refined by:** [ADR-0028](0028-command-bus.md) (implements the deferred `CommandBus` as `es/commandbus`), [ADR-0029](0029-commandbus-middleware.md) (adds bus-level middleware), [ADR-0030](0030-execute-creates-on-missing.md) (changes `Execute`'s behavior on a missing stream from "propagate `*StreamNotFoundError`" to "call the handler with a fresh aggregate," matching how DDD/CQRS frameworks model "command on aggregate").
 
 ## Context
 

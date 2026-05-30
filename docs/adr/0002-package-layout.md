@@ -10,8 +10,8 @@ The toolkit will eventually include sibling concerns beyond the core event-sourc
 
 - Core types live in `synapse/es`.
 - The root `synapse` package is doc-only.
-- Sibling concerns are added as `synapse/<concern>` subpackages: `synapse/codec/json`, `synapse/eventstore/memory`, `synapse/id`, and future `synapse/admin`, `synapse/web`, `synapse/projection`.
-- Error message strings use the `"synapse: ..."` brand prefix rather than `"es: ..."`. This mirrors `net/http` returning `"http: ..."`: the prefix identifies the library to a reader of a log line, not the internal package short-name.
+- Sibling concerns are added as `synapse/<concern>` subpackages: `synapse/codec/json`, `synapse/codec/proto`, `synapse/eventstore/memory`, `synapse/eventstore/sqlite`, `synapse/eventstore/postgres`, `synapse/idgen`, `synapse/es/middleware`, `synapse/es/projection`, `synapse/es/commandbus`, plus the matching snapshot- and checkpoint-store backends. Future: `synapse/admin`, `synapse/web`.
+- Error message strings use the `"synapse: ..."` brand prefix rather than `"es: ..."`. This mirrors `net/http` returning `"http: ..."`: one short brand identifies the library to a reader of a log line, not the internal package short-name. No sub-package variants (no `"synapse/postgres: ..."`); apply the brand at leaves and at wraps over third-party errors only — internal wraps over already-branded errors drop the prefix so chains don't compound `"synapse: ... synapse: ..."`. See CLAUDE.md "Conventions worth remembering" for the full rule.
 
 ## Consequences
 

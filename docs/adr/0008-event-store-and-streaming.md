@@ -2,6 +2,7 @@
 
 **Status:** Accepted (2026-05-28)
 **Relates to:** [ADR-0005 Event envelope](0005-event-envelope.md), [ADR-0006 Optimistic concurrency](0006-optimistic-concurrency.md), [ADR-0007 Codec registry](0007-codec-registry.md)
+**Extended by:** [ADR-0014](0014-subscriptions-projections.md) (adds `GlobalPosition` to the envelope and the `SubscribableEventStore` extension), [ADR-0027](0027-subscription-type-filters-checkpoint-batching.md) (adds `SubscriptionOptions.Types`).
 
 ## Context
 

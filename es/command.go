@@ -53,14 +53,16 @@ func chain(mws []Middleware, op Operation) Operation {
 // chain (see [WithMiddleware]), so cross-cutting concerns such as
 // locking and retries apply uniformly across all command types.
 //
-// If the stream does not yet exist, Execute calls the handler with a
-// fresh aggregate built by the Repository's newFn — Save then appends
-// with expected revision [NoStream], which is the natural shape for a
-// create-style command. Handlers that require an existing aggregate
-// should guard on agg.Version() and return an error. See ADR-0030.
+// When [Repository.Load] returns an error wrapping [ErrStreamNotFound],
+// Execute treats it as "fresh aggregate": it builds one via the
+// Repository's newFn (the same constructor passed to [NewRepository])
+// and runs the handler against it. Save then appends with expected
+// revision [NoStream], which is the natural shape for a create-style
+// command. Handlers that require an existing aggregate must guard on
+// agg.Version() == 0 and return an error. See ADR-0030.
 //
-// If the handler returns a non-nil error, Execute propagates it
-// without attempting to save.
+// Any other Load error propagates unchanged. If the handler returns a
+// non-nil error, Execute propagates it without attempting to save.
 func Execute[C any, A Aggregate](
 	ctx context.Context,
 	r *Repository[A],

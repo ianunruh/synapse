@@ -77,7 +77,7 @@ A full walkthrough is in [`docs/getting-started.md`](docs/getting-started.md). R
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — a 20-minute walkthrough that builds the Counter aggregate above into a service with commands, a projection, snapshots, and a SQLite backend.
-- [Architecture Decision Records](docs/adr/) — 21 records explaining why the library is shaped the way it is.
+- [Architecture Decision Records](docs/adr/) — 30 records explaining why the library is shaped the way it is.
 - [Benchmarks](docs/benchmarks.md) — baseline numbers for the core hot paths and the included store backends.
 - Package docs: [pkg.go.dev/github.com/ianunruh/synapse/es](https://pkg.go.dev/github.com/ianunruh/synapse/es).
 
@@ -88,12 +88,15 @@ The repo is a Go workspace. Core interfaces live in `es`; backends and contract 
 | Package | Module | What it is |
 |---|---|---|
 | `es` | root | Aggregate, Repository, Event, Envelope, Snapshotter, Projection, etc. |
-| `es/middleware` | root | Built-in middleware: PerAggregateLocking, Retry |
-| `es/projection` | root | Runner for read-model projections |
+| `es/middleware` | root | Built-in repository middleware: PerAggregateLocking, Retry |
+| `es/projection` | root | Runner for read-model projections (type filters, batched checkpoints) |
+| `es/commandbus` | root | Transport-facing CommandBus + middleware (Logging, Recover, Timeout) |
 | `codec/json` | root | JSON event/snapshot codec |
+| `codec/proto` | sibling | Protobuf event/snapshot codec |
+| `codec/codectest` | root | Codec contract test suite |
 | `idgen` | root | UUIDv7 identifier generator |
 | `eventstore/memory` | root | In-memory event store |
-| `eventstore/postgres` | sibling | Postgres event store (pgxpool, LISTEN/NOTIFY) |
+| `eventstore/postgres` | sibling | Postgres event store (pgxpool, shared LISTEN/NOTIFY) |
 | `eventstore/sqlite` | sibling | SQLite event store |
 | `eventstore/eventstoretest` | root | Backend contract test suite |
 | `snapshotstore/memory` | root | In-memory snapshot store |
@@ -104,10 +107,12 @@ The repo is a Go workspace. Core interfaces live in `es`; backends and contract 
 | `checkpointstore/postgres` | sibling | Postgres checkpoint store |
 | `checkpointstore/sqlite` | sibling | SQLite checkpoint store |
 | `checkpointstore/checkpointstoretest` | root | Backend contract test suite |
+| `pgtest` | sibling | Postgres testing harness (testcontainers-go) |
 | `examples/counter` | root | In-memory event sourcing walkthrough |
 | `examples/order` | root | Multi-stage aggregate with command validation |
 | `examples/projection` | root | Projection runner walkthrough |
 | `examples/persistent` | sibling | SQLite-backed end-to-end demo |
+| `examples/http-service` | root | CommandBus driven by net/http, live projection |
 
 Sibling modules each have their own `go.mod`. A `go.work` file at the repo root ties them together for local development. The root module has zero third-party deps; the SQLite backends transitively pull in [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) (pure Go, no CGo).
 
